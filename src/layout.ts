@@ -18,10 +18,11 @@ export function fitLabel(name: string, width: number, measure: (text: string) =>
   if (width <= 0) return null;
   if (measure(name) <= width) return name;
   const characters = Array.from(name);
-  while (characters.length >= 4) {
+  const minimum = Math.max(8, Math.ceil(characters.length / 2));
+  while (characters.length > minimum) {
     characters.pop();
     const label = `${characters.join('')}…`;
-    if (characters.length >= 4 && measure(label) <= width) return label;
+    if (measure(label) <= width) return label;
   }
   return null;
 }

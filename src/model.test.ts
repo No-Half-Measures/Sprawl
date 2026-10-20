@@ -111,10 +111,14 @@ describe('squarified treemap', () => {
     expect(tiles[0].frame).toBe(false);
     expect(tiles[0].node.category).toBe('code');
   });
-  it('omits names when fewer than four characters can be shown before the ellipsis', () => {
+  it('truncates names only when at least eight characters and half the name remain', () => {
     const measure = (text: string) => Array.from(text).length * 7;
     expect(fitLabel('long-filename.lib', 28, measure)).toBeNull();
-    expect(fitLabel('long-filename.lib', 35, measure)).toBe('long…');
+    expect(fitLabel('long-filename.lib', 35, measure)).toBeNull();
+    expect(fitLabel('long-filename.lib', 63, measure)).toBeNull();
+    expect(fitLabel('long-filename.lib', 70, measure)).toBe('long-file…');
+    expect(fitLabel('😀long-filename.lib', 70, measure)).toBe('😀long-fil…');
+    expect(fitLabel('file.lib', 49, measure)).toBeNull();
     expect(fitLabel('file.lib', 70, measure)).toBe('file.lib');
     expect(fitLabel('file.lib', 0, measure)).toBeNull();
   });

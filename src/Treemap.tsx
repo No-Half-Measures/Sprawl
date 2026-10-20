@@ -84,7 +84,7 @@ export default function Treemap({ tree, hover, filter, onHover, onOpen, onContex
         ctx.fillStyle = gradient;
         ctx.fillRect(x + 1, y + 1, width - 2, height - 2);
       }
-      if (width > 40 && height > (frame ? 19 : 42)) {
+      if (width > (frame ? 40 : 56) && height > (frame ? 19 : 42)) {
         const prefix = node.kind === 'dir' ? '▱ ' : '';
         ctx.font = `${frame ? 600 : 500} 12px "Segoe UI", sans-serif`;
         const fitted = fitLabel(node.name, width - 16 - ctx.measureText(prefix).width, text => ctx.measureText(text).width);
