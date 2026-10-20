@@ -7,6 +7,7 @@ import ScanScreen from './ScanScreen';
 import ResultsScreen from './ResultsScreen';
 import {
   emptyProgress,
+  isDriveRoot,
   type Breakdown,
   type Drive,
   type LargeFile,
@@ -282,7 +283,7 @@ export default function App() {
   }
   const current = trail[trail.length - 1];
   const linkedHover = tree && hover !== null ? findTrail(tree, hover)?.[0]?.id ?? hover : null;
-  const drive = drives.find(d => scanPath.toLowerCase().startsWith(d.mount.toLowerCase()));
+  const drive = drives.find(d => isDriveRoot(scanPath, d.mount) || scanPath.toLowerCase().startsWith(d.mount.toLowerCase()));
   const parentSize = trail.length > 1
     ? trail[trail.length - 2].size
     : drive?.total;
@@ -363,6 +364,7 @@ export default function App() {
           history={history}
           parentSize={parentSize}
           parentName={parentName}
+          drive={trail.length === 1 && drive && isDriveRoot(scanPath, drive.mount) ? drive : undefined}
           scanPath={scanPath}
           skipped={skipped}
           error={error}

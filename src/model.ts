@@ -6,6 +6,9 @@ export interface Breakdown { category: string; bytes: number; files: number }
 export interface Drive { mount: string; label: string; total: number; free: number }
 export interface Progress { files: number; folders: number; bytes: number; errors: number; currentPath: string }
 export const emptyProgress: Progress = { files: 0, folders: 0, bytes: 0, errors: 0, currentPath: '' };
+export function isDriveRoot(path: string, mount: string): boolean {
+  return path.replace(/[\\/]+$/, '').toLowerCase() === mount.replace(/[\\/]+$/, '').toLowerCase();
+}
 export function formatSize(bytes: number): string {
   if (!Number.isFinite(bytes) || bytes <= 0) return '0 B';
   const units = ['B', 'KB', 'MB', 'GB', 'TB', 'PB'];

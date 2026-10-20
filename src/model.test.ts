@@ -1,6 +1,18 @@
 import { describe, expect, it } from 'vitest';
-import { categories, categoryFor, formatSize, percent, type TreeNode } from './model';
+import { categories, categoryFor, formatSize, isDriveRoot, percent, type TreeNode } from './model';
 import { fitLabel, layoutTree, textColor } from './layout';
+
+describe('drive root matching', () => {
+  it('ignores case and trailing separators without matching folders', () => {
+    for (const path of ['C:\\', 'C:', 'c:\\', 'C:/', 'C:\\\\']) {
+      expect(isDriveRoot(path, 'C:\\')).toBe(true);
+    }
+    expect(isDriveRoot('C:\\', 'c:/')).toBe(true);
+    expect(isDriveRoot('C:\\Users', 'C:\\')).toBe(false);
+    expect(isDriveRoot('E:\\Projects\\Other', 'E:\\')).toBe(false);
+    expect(isDriveRoot('D:\\', 'C:\\')).toBe(false);
+  });
+});
 
 describe('binary size formatting', () => {
   it('handles zero, boundaries, fractions and large files', () => {

@@ -2,7 +2,7 @@ import { renderToStaticMarkup } from 'react-dom/server';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import HomeScreen from './HomeScreen';
 import ResultsScreen from './ResultsScreen';
-import { categories, type TreeNode } from './model';
+import { categories, formatSize, type TreeNode } from './model';
 
 const current: TreeNode = { id: 0, name: 'Other', kind: 'dir', size: 10000, files: 2, folders: 1, category: 'apps' };
 const longName = `${'long-name-'.repeat(15)}.pbo`;
@@ -55,6 +55,44 @@ describe('screen details', () => {
     expect(html).toContain(`title="${nestedName}"`);
     expect(html).toContain('class="row-percent">&lt;0.1%');
     expect(html).toContain('aria-label="Up one folder (Alt+↑)"');
+  });
+
+  it('renders used, free and total capacity for a whole-drive scan', () => {
+    const drive = { mount: 'C:\\', label: 'Local disk', total: 1024 ** 4, free: 100 * 1024 ** 3 };
+    const html = renderToStaticMarkup(
+      <ResultsScreen
+        current={current}
+        trail={[current]}
+        history={[]}
+        parentSize={drive.total}
+        parentName={drive.mount}
+        drive={drive}
+        scanPath="C:\\"
+        skipped={0}
+        error=""
+        loading={false}
+        tree={null}
+        hover={null}
+        linkedHover={null}
+        filter={null}
+        largest={[]}
+        breakdown={[]}
+        back={noop}
+        up={noop}
+        navigate={noop}
+        enter={noop}
+        setHover={noop}
+        setFilter={noop}
+        context={noop}
+        action={async () => {}}
+      />,
+    );
+    expect(html).toContain(`Used <strong>${formatSize(drive.total - drive.free)}</strong>`);
+    expect(html).toContain(`Free <strong>${formatSize(drive.free)}</strong>`);
+    expect(html).toContain(`Total <strong>${formatSize(drive.total)}</strong>`);
+    expect(html).toContain('<span class="drive-capacity"><span>C:\\</span>');
+    expect(html).toContain(`<strong>${formatSize(current.size)}</strong>`);
+    expect(html).not.toContain('% of C:');
   });
 
   it('keeps five drive cards and a single-line home heading', () => {

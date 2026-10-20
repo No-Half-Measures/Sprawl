@@ -5,6 +5,7 @@ import {
   formatSize,
   percent,
   type Breakdown,
+  type Drive,
   type LargeFile,
   type TreeNode,
 } from './model';
@@ -15,6 +16,7 @@ interface Props {
   history: TreeNode[][];
   parentSize: number | undefined;
   parentName: string | undefined;
+  drive?: Drive;
   scanPath: string;
   skipped: number;
   error: string;
@@ -41,6 +43,7 @@ export default function ResultsScreen({
   history,
   parentSize,
   parentName,
+  drive,
   scanPath,
   skipped,
   error,
@@ -107,7 +110,14 @@ export default function ResultsScreen({
             <strong>{formatSize(current.size)}</strong>
             <span>{current.files.toLocaleString()} files</span>
             <span>{current.folders.toLocaleString()} folders</span>
-            {parentSize !== undefined && (
+            {drive ? (
+              <span className="drive-capacity">
+                <span>{drive.mount}</span>
+                <span>Used <strong>{formatSize(Math.max(0, drive.total - drive.free))}</strong></span>
+                <span>Free <strong>{formatSize(drive.free)}</strong></span>
+                <span>Total <strong>{formatSize(drive.total)}</strong></span>
+              </span>
+            ) : parentSize !== undefined && (
               <span>{percent(current.size, parentSize)} of {parentName}</span>
             )}
           </span>
