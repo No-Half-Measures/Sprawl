@@ -45,6 +45,7 @@ describe('screen details', () => {
       />,
     );
     expect(html).toContain('10% of E:');
+    expect(html).not.toContain('Scanned');
     expect(html).toContain('Apps &amp; games');
     expect(html).toContain('Code &amp; build');
     expect(html).toContain('1 B · &lt;0.1%');
@@ -93,7 +94,7 @@ describe('screen details', () => {
     expect(html).toContain(`Free <strong>${formatSize(drive.free)}</strong>`);
     expect(html).toContain(`Total <strong>${formatSize(drive.total)}</strong>`);
     expect(html).toContain('<span class="drive-capacity"><span>C:\\</span>');
-    expect(html).toContain(`<strong>${formatSize(current.size)}</strong>`);
+    expect(html).toContain(`Scanned <strong>${formatSize(current.size)}</strong>`);
     expect(html).not.toContain('% of C:');
   });
 

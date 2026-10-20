@@ -107,7 +107,9 @@ export default function ResultsScreen({
         <div className="folder-summary">
           <h1 title={currentPath}>{current.name}</h1>
           <span>
-            <strong>{formatSize(current.size)}</strong>
+            {drive ? (
+              <span title="Total size of files the scan could read. Used also counts unreadable items and file-system overhead.">Scanned <strong>{formatSize(current.size)}</strong></span>
+            ) : <strong>{formatSize(current.size)}</strong>}
             <span>{current.files.toLocaleString()} files</span>
             <span>{current.folders.toLocaleString()} folders</span>
             {drive ? (
