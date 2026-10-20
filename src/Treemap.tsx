@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { categoryColor, formatSize, percent, type TreeNode } from './model';
-import { fitLabel, layoutTree, textColor, type Tile } from './layout';
+import { fitLabel, layoutTree, textColor, wrapLabel, type Tile } from './layout';
 
 interface Props {
   tree: TreeNode;
@@ -84,23 +84,26 @@ export default function Treemap({ tree, hover, filter, onHover, onOpen, onContex
         ctx.fillStyle = gradient;
         ctx.fillRect(x + 1, y + 1, width - 2, height - 2);
       }
-      if (width > (frame ? 40 : 56) && height > (frame ? 19 : 42)) {
+      if (frame ? width > 40 && height > 19 : width >= 72 && height >= 44) {
         const prefix = node.kind === 'dir' ? '▱ ' : '';
         ctx.font = `${frame ? 600 : 500} 12px "Segoe UI", sans-serif`;
-        const fitted = fitLabel(node.name, width - 16 - ctx.measureText(prefix).width, text => ctx.measureText(text).width);
+        const labelWidth = width - 16 - ctx.measureText(prefix).width;
+        const measure = (text: string) => ctx.measureText(text).width;
+        const fitted = frame ? fitLabel(node.name, labelWidth, measure) : null;
+        const lines = frame ? (fitted ? [fitted] : []) : wrapLabel(node.name, labelWidth, height >= 62 ? 2 : 1, measure);
         ctx.font = '11px "Segoe UI", sans-serif';
         const sizeLabel = formatSize(node.size);
-        if (!fitted || (!frame && ctx.measureText(sizeLabel).width > width - 14)) continue;
+        if (!lines.length || (!frame && ctx.measureText(sizeLabel).width > width - 14)) continue;
         ctx.save();
         ctx.beginPath();
         ctx.rect(x + 5, y + 2, width - 10, height - 4);
         ctx.clip();
         ctx.fillStyle = frame ? styles.getPropertyValue('--text').trim() : textColor(color);
         ctx.font = `${frame ? 600 : 500} 12px "Segoe UI", sans-serif`;
-        ctx.fillText(`${prefix}${fitted}`, x + 7, y + 15);
+        lines.forEach((line, i) => ctx.fillText(`${i === 0 ? prefix : ''}${line}`, x + 7, y + 15 + i * 15));
         if (!frame) {
           ctx.font = '11px "Segoe UI", sans-serif';
-          ctx.fillText(sizeLabel, x + 7, y + 31);
+          ctx.fillText(sizeLabel, x + 7, y + 16 + lines.length * 15);
         }
         ctx.restore();
       }

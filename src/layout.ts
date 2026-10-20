@@ -18,13 +18,34 @@ export function fitLabel(name: string, width: number, measure: (text: string) =>
   if (width <= 0) return null;
   if (measure(name) <= width) return name;
   const characters = Array.from(name);
-  const minimum = Math.max(8, Math.ceil(characters.length / 2));
-  while (characters.length > minimum) {
+  while (characters.length >= 4) {
     characters.pop();
     const label = `${characters.join('')}…`;
-    if (measure(label) <= width) return label;
+    if (characters.length >= 4 && measure(label) <= width) return label;
   }
   return null;
+}
+export function wrapLabel(name: string, width: number, maxLines: number, measure: (text: string) => number): string[] {
+  const fitted = fitLabel(name, width, measure);
+  if (maxLines < 1 || fitted === null) return [];
+  if (fitted === name || maxLines === 1) return [fitted];
+  const characters = Array.from(name);
+  const lines: string[] = [];
+  while (characters.length) {
+    const remainder = characters.join('');
+    if (lines.length === maxLines - 1 || measure(remainder) <= width) {
+      const last = fitLabel(remainder, width, measure);
+      if (last !== null) lines.push(last);
+      break;
+    }
+    let end = 0, separator = 0;
+    while (end < characters.length && measure(characters.slice(0, end + 1).join('')) <= width) {
+      if (/[ \-_.\\/]/.test(characters[end])) separator = end + 1;
+      end++;
+    }
+    lines.push(characters.splice(0, separator || end).join(''));
+  }
+  return lines;
 }
 export function textColor(hex: string): string {
   const channels = [1, 3, 5].map(i => parseInt(hex.slice(i, i + 2), 16) / 255).map(v => v <= .04045 ? v / 12.92 : ((v + .055) / 1.055) ** 2.4);

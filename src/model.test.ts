@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { categories, categoryFor, formatSize, isDriveRoot, percent, type TreeNode } from './model';
-import { fitLabel, layoutTree, textColor } from './layout';
+import { fitLabel, layoutTree, textColor, wrapLabel } from './layout';
 
 describe('drive root matching', () => {
   it('ignores case and trailing separators without matching folders', () => {
@@ -111,15 +111,46 @@ describe('squarified treemap', () => {
     expect(tiles[0].frame).toBe(false);
     expect(tiles[0].node.category).toBe('code');
   });
-  it('truncates names only when at least eight characters and half the name remain', () => {
+  it('truncates names when four characters and an ellipsis fit', () => {
     const measure = (text: string) => Array.from(text).length * 7;
     expect(fitLabel('long-filename.lib', 28, measure)).toBeNull();
-    expect(fitLabel('long-filename.lib', 35, measure)).toBeNull();
-    expect(fitLabel('long-filename.lib', 63, measure)).toBeNull();
+    expect(fitLabel('long-filename.lib', 35, measure)).toBe('long…');
+    expect(fitLabel('long-filename.lib', 63, measure)).toBe('long-fil…');
     expect(fitLabel('long-filename.lib', 70, measure)).toBe('long-file…');
-    expect(fitLabel('😀long-filename.lib', 70, measure)).toBe('😀long-fil…');
-    expect(fitLabel('file.lib', 49, measure)).toBeNull();
+    expect(fitLabel('😀long-filename.lib', 35, measure)).toBe('😀lon…');
+    expect(fitLabel('file.lib', 49, measure)).toBe('file.l…');
     expect(fitLabel('file.lib', 70, measure)).toBe('file.lib');
     expect(fitLabel('file.lib', 0, measure)).toBeNull();
+  });
+});
+
+describe('tile label wrapping', () => {
+  const measure = (text: string) => Array.from(text).length * 7;
+  it('keeps names that fit on one line', () => {
+    expect(wrapLabel('file.lib', 56, 2, measure)).toEqual(['file.lib']);
+  });
+  it('breaks after separators that fit on the line', () => {
+    for (const separator of [' ', '-', '_', '.', '\\', '/']) {
+      expect(wrapLabel(`long${separator}filename`, 63, 2, measure)).toEqual([`long${separator}`, 'filename']);
+    }
+    expect(wrapLabel('one-two-file', 56, 2, measure)).toEqual(['one-two-', 'file']);
+  });
+  it('breaks between characters without splitting unicode characters', () => {
+    expect(wrapLabel('abcdefghijkl', 42, 2, measure)).toEqual(['abcdef', 'ghijkl']);
+    expect(wrapLabel('😀abcdefghij', 42, 2, measure)).toEqual(['😀abcde', 'fghij']);
+  });
+  it('truncates the final line', () => {
+    expect(wrapLabel('long-filename.lib', 56, 2, measure)).toEqual(['long-', 'filenam…']);
+  });
+  it('hides names when there is too little room', () => {
+    expect(wrapLabel('long-filename.lib', 28, 2, measure)).toEqual([]);
+    expect(wrapLabel('file.lib', 0, 2, measure)).toEqual([]);
+    expect(wrapLabel('file.lib', 56, 0, measure)).toEqual([]);
+  });
+  it('uses fitLabel for a single line', () => {
+    for (const width of [0, 28, 35, 70, 140]) {
+      const fitted = fitLabel('long-filename.lib', width, measure);
+      expect(wrapLabel('long-filename.lib', width, 1, measure)).toEqual(fitted === null ? [] : [fitted]);
+    }
   });
 });
