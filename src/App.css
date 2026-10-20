@@ -86,7 +86,7 @@ canvas { display: block; width: 100%; height: 100%; position: absolute; inset: 0
 .tooltip { pointer-events: none; position: absolute; width: 250px; display: flex; flex-direction: column; gap: 6px; background: var(--bg); border: 1px solid var(--muted); box-shadow: 0 5px 22px #0004; border-radius: 5px; padding: 12px 14px; font-size: 13px; z-index: 2; }
 .tooltip strong { overflow-wrap: anywhere; }
 .tooltip small { color: var(--muted); font-size: 12px; }
-.details-panel { border-left: 1px solid var(--line); display: grid; grid-template-columns: minmax(0,1fr); grid-template-rows: minmax(0,55fr) minmax(0,45fr); min-width: 0; min-height: 0; background: var(--surface); }
+.details-panel { border-left: 1px solid var(--line); display: grid; grid-template-columns: minmax(0,1fr); grid-template-rows: minmax(0,48fr) minmax(0,52fr); min-width: 0; min-height: 0; background: var(--surface); }
 .contents-panel,.largest-panel { display: flex; flex-direction: column; min-width: 0; min-height: 0; }
 .details-panel .section-heading { min-width: 0; padding: 0 16px; flex-shrink: 0; }
 .details-panel .section-heading > span { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
@@ -106,8 +106,10 @@ canvas { display: block; width: 100%; height: 100%; position: absolute; inset: 0
 .row-meter { display: block; height: 2px; margin: 7px 0 0 23px; background: var(--line); }
 .row-meter i { display: block; height: 100%; opacity: .75; }
 .largest-panel { border-top: 1px solid var(--line); }
-.large-row { display: grid; grid-template-columns: 18px minmax(0,1fr) 76px; align-items: center; gap: 10px; min-width: 0; width: 100%; text-align: left; border: 0; border-radius: 0; background: transparent; padding: 9px 16px; font-variant-numeric: tabular-nums; }
-.large-row > span:last-child { font-size: 12px; font-weight: 600; white-space: nowrap; }
+.large-row { display: grid; grid-template-columns: 18px minmax(0,1fr) 84px; align-items: center; gap: 10px; min-width: 0; width: 100%; text-align: left; border: 0; border-radius: 0; background: transparent; padding: 10px 16px; font-variant-numeric: tabular-nums; }
+.large-size { display: flex; flex-direction: column; align-items: flex-end; gap: 2px; white-space: nowrap; }
+.large-size strong { font-size: 14px; font-weight: 650; color: var(--text); }
+.large-size small { font-size: 12px; color: var(--muted); }
 .rank { color: var(--muted); font-size: 11px; width: 17px; flex-shrink: 0; }
 .large-name { min-width: 0; display: flex; flex-direction: column; gap: 3px; }
 .large-name strong { font-size: 13px; font-weight: 500; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }

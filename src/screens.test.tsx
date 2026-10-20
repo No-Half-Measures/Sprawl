@@ -2,7 +2,7 @@ import { renderToStaticMarkup } from 'react-dom/server';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import HomeScreen from './HomeScreen';
 import ResultsScreen from './ResultsScreen';
-import { categories, formatSize, type TreeNode } from './model';
+import { categories, formatSize, percent, type TreeNode } from './model';
 
 const current: TreeNode = { id: 0, name: 'Other', kind: 'dir', size: 10000, files: 2, folders: 1, category: 'apps' };
 const longName = `${'long-name-'.repeat(15)}.pbo`;
@@ -54,6 +54,8 @@ describe('screen details', () => {
     expect(html).toContain(`title="${longName}"`);
     expect(html).toContain(`title="${nestedName}"`);
     expect(html).toContain('class="row-percent">&lt;0.1%');
+    expect(html).toContain(`<span class="large-size"><strong>${formatSize(9999)}</strong>`);
+    expect(html).toContain(`<small>${percent(9999, 10000)}</small></span>`);
     expect(html).toContain('aria-label="Up one folder (Alt+↑)"');
   });
 

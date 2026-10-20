@@ -263,7 +263,7 @@ export default function ResultsScreen({
                     <strong title={f.name}>{f.name}</strong>
                     <small title={f.relativePath}>{f.relativePath}</small>
                   </span>
-                  <span className="row-size">{formatSize(f.size)}</span>
+                  <span className="large-size"><strong>{formatSize(f.size)}</strong><small>{percent(f.size, current.size)}</small></span>
                 </button>
               ))}
               {!loading && !largest.length && (
