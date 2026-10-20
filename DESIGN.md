@@ -33,7 +33,7 @@ DiskMapper shows where disk space goes. You pick a drive or folder, it scans, an
 | --- | --- |
 | `list_drives()` | `[{ mount, label, total, free }]` |
 | `list_saved_scans()` | Saved scan metadata, newest first |
-| `load_saved_scan(path)` | Opens a saved tree and returns its root, skipped count, and metadata |
+| `load_saved_scan(path, scannedAt)` | Opens a saved tree and returns its root, skipped count, and metadata |
 | `clear_saved_scans()` | Removes all saved scans |
 | `start_scan(path)` | starts a background scan, returns immediately |
 | `cancel_scan()` | — |
@@ -49,6 +49,8 @@ Files are grouped by extension into Video, Images, Audio, Documents, Archives, C
 
 ### Saved scans
 - Completed scans are saved in the app's local data directory under `scans/`, using streaming bincode + zstd and a JSON metadata sidecar written last. Cancelled and failed scans are never saved.
+- Tree format v2 is `DISKMAP\0` + little-endian u32 version + zstd (level 3, checksum). The bincode payload contains node count, root path and errors, followed by node records (name, parent, ordered children, kind, size, files, folders, optional u8 category index into the shared category list). Loading decompresses into a buffer before decoding; child order and structural validation are preserved. Older versions are discarded.
+- The session retains snapshot metadata and reopens matching path keys and timestamps without disk access. Root largest-file and category panels are cached for that tree; replacing the snapshot clears them and releases the old tree in the background.
 - Each path keeps one snapshot; the ten newest snapshots are retained. Paths match without case or trailing separators. Listing checks metadata and tree file headers and discards invalid entries and orphan files. Loading checks compressed stream integrity and validates the decoded tree, deleting corrupt entries.
 - Home shows each drive's last scan and recent folders. Saved results show a snapshot banner with Rescan, warning after seven days or when drive free space changes by at least 1 GiB or 1% of drive capacity, whichever is larger.
 
