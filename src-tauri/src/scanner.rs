@@ -336,7 +336,7 @@ pub struct ViewNode {
     pub children: Option<Vec<ViewNode>>,
 }
 
-#[derive(Serialize, Debug)]
+#[derive(Clone, Serialize, Debug)]
 #[serde(rename_all = "camelCase")]
 pub struct LargeFile {
     pub id: usize,
@@ -346,7 +346,7 @@ pub struct LargeFile {
     pub category: String,
 }
 
-#[derive(Serialize, Debug)]
+#[derive(Clone, Serialize, Debug)]
 pub struct Breakdown {
     pub category: String,
     pub bytes: u64,

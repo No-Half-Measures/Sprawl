@@ -58,6 +58,7 @@ fn drive_metadata_uses_the_longest_mount_prefix() {
 fn saved_scan_round_trip() {
     let (_fixture, mut tree) = fixture();
     tree.errors = 3;
+    tree.nodes[0].category = None;
     let dir = tempfile::tempdir().unwrap();
     let meta = saved(&tree, 123);
     cache::save(dir.path(), &tree, &meta).unwrap();
@@ -65,6 +66,17 @@ fn saved_scan_round_trip() {
     assert_eq!(loaded_meta, meta);
     assert_eq!(loaded.nodes.len(), tree.nodes.len());
     assert_eq!(loaded.root_path, tree.root_path);
+    assert_eq!(loaded.errors, tree.errors);
+    for (actual, expected) in loaded.nodes.iter().zip(&tree.nodes) {
+        assert_eq!(actual.name, expected.name);
+        assert_eq!(actual.parent, expected.parent);
+        assert_eq!(actual.children, expected.children);
+        assert_eq!(actual.kind, expected.kind);
+        assert_eq!(actual.size, expected.size);
+        assert_eq!(actual.files, expected.files);
+        assert_eq!(actual.folders, expected.folders);
+        assert_eq!(actual.category, expected.category);
+    }
     assert_eq!(
         serde_json::to_value(&loaded).unwrap(),
         serde_json::to_value(&tree).unwrap()
@@ -83,6 +95,59 @@ fn saved_scan_round_trip() {
     .unwrap();
     assert_eq!(json["scannedAt"], 123);
     assert_eq!(json["driveFree"], 100);
+}
+
+#[test]
+fn opening_matching_session_reuses_tree_and_panels() {
+    use std::sync::{Arc, atomic::Ordering};
+    let (_fixture, tree) = fixture();
+    let meta = saved(&tree, 123);
+    let tree = Arc::new(tree);
+    let cancel = Arc::new(AtomicBool::new(false));
+    let mut session = crate::Session {
+        tree: Some(tree.clone()),
+        saved: Some(meta.clone()),
+        cancel: Some(cancel.clone()),
+        ..Default::default()
+    };
+    let panels = session.panels.clone();
+    let files = panels
+        .largest
+        .get_or_init(|| tree.largest(0, 50))
+        .as_ref()
+        .unwrap();
+    let types = panels
+        .breakdown
+        .get_or_init(|| tree.breakdown(0))
+        .as_ref()
+        .unwrap();
+    let loaded = session
+        .open_saved(&format!("{}\\", meta.path.to_uppercase()), 123)
+        .unwrap()
+        .unwrap();
+    assert_eq!(loaded.saved, meta);
+    assert_eq!(loaded.root.size, tree.nodes[0].size);
+    assert_eq!(loaded.errors, tree.errors);
+    assert_eq!(session.generation, 1);
+    assert!(cancel.load(Ordering::Relaxed));
+    assert!(session.cancel.is_none());
+    assert!(Arc::ptr_eq(session.tree.as_ref().unwrap(), &tree));
+    assert!(Arc::ptr_eq(&session.panels, &panels));
+    assert_eq!(
+        serde_json::to_value(files).unwrap(),
+        serde_json::to_value(tree.largest(0, 50).unwrap()).unwrap()
+    );
+    assert_eq!(
+        serde_json::to_value(types).unwrap(),
+        serde_json::to_value(tree.breakdown(0).unwrap()).unwrap()
+    );
+    assert!(session.open_saved(&meta.path, 124).unwrap().is_none());
+    assert!(session.open_saved("another path", 123).unwrap().is_none());
+    session.saved = None;
+    assert!(session.open_saved(&meta.path, 123).unwrap().is_none());
+    session.saved = Some(meta.clone());
+    session.tree = None;
+    assert!(session.open_saved(&meta.path, 123).unwrap().is_none());
 }
 
 #[test]
@@ -210,6 +275,22 @@ fn corrupt_saved_payloads_fail_cleanly() {
         assert!(!path.exists());
         assert!(!path.with_extension("json").exists());
         assert!(cache::list(dir.path()).unwrap().is_empty());
+    }
+    for fault in ["category index", "trailing bytes", "node count"] {
+        cache::save(dir.path(), &tree, &meta).unwrap();
+        let mut bytes = fs::read(&path).unwrap();
+        let mut payload = zstd::stream::decode_all(&bytes[12..]).unwrap();
+        match fault {
+            "category index" => *payload.last_mut().unwrap() = u8::MAX,
+            "trailing bytes" => payload.push(0),
+            _ => payload[0] = 0,
+        }
+        bytes.truncate(12);
+        bytes.extend(zstd::stream::encode_all(payload.as_slice(), 3).unwrap());
+        fs::write(&path, bytes).unwrap();
+        assert!(cache::load(dir.path(), &meta.path).is_err(), "{fault}");
+        assert!(!path.exists());
+        assert!(!path.with_extension("json").exists());
     }
     tree.nodes[0].children.push(usize::MAX);
     cache::save(dir.path(), &tree, &meta).unwrap();

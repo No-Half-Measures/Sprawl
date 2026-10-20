@@ -142,8 +142,19 @@ describe('saved scan screens', () => {
     for (const text of ['Open last scan', 'Open', 'Clear saved scans']) {
       buttons(screen).find(b => b.props.children === text)!.props.onClick();
     }
-    expect(openSaved.mock.calls).toEqual([[scan.path], [folder.path]]);
+    expect(openSaved.mock.calls).toEqual([[scan.path, scan.scannedAt], [folder.path, folder.scannedAt]]);
     expect(clearSaved).toHaveBeenCalledOnce();
+  });
+  it('labels only the opening snapshot and disables all open and scan buttons', () => {
+    const folder = { ...scan, path: 'C:\\Users\\Example' };
+    const props = { drives: [drive], ready: true, start: async () => {}, pickFolder: async () => {}, saved: [scan, folder], openSaved: async () => {}, clearSaved: async () => {}, now };
+    for (const opening of [scan.path, folder.path]) {
+      const html = renderToStaticMarkup(<HomeScreen {...props} opening={opening} />);
+      const controls = html.match(/<button\b[^>]*>[^<]*<\/button>/g)!;
+      expect(controls.filter(b => b.includes('Opening…'))).toHaveLength(1);
+      expect(controls.every(b => b.includes('disabled=""'))).toBe(true);
+    }
+    expect(renderToStaticMarkup(<HomeScreen {...props} />)).not.toContain('disabled=""');
   });
   it('styles stale drive scans as warnings and fresh scans neutrally', () => {
     const props = { drives: [drive], ready: true, start: async () => {}, pickFolder: async () => {}, openSaved: async () => {}, clearSaved: async () => {}, now };

@@ -59,6 +59,7 @@ export default function App() {
   const [filter, setFilter] = useState<string | null>(null);
   const [menu, setMenu] = useState<Menu | null>(null);
   const [loading, setLoading] = useState(false);
+  const [opening, setOpening] = useState<string | null>(null);
   const [cancelling, setCancelling] = useState(false);
   const scanId = useRef<number | null>(null);
   const queued = useRef<{
@@ -205,15 +206,16 @@ export default function App() {
       setPhase('home');
     }
   }
-  async function openSaved(path: string) {
+  async function openSaved(path: string, scannedAt: number) {
     if (launching.current) return;
     launching.current = true;
+    setOpening(path);
     scanId.current = null;
     queued.current = [];
     setError('');
     setNotice('');
     try {
-      const loaded = await invoke<{ root: TreeNode; errors: number; saved: SavedScan }>('load_saved_scan', { path });
+      const loaded = await invoke<{ root: TreeNode; errors: number; saved: SavedScan }>('load_saved_scan', { path, scannedAt });
       setScanPath(loaded.saved.path);
       setSnapshot(loaded.saved);
       setSkipped(loaded.errors);
@@ -225,6 +227,7 @@ export default function App() {
       setError(String(e));
       void refreshSaved();
     } finally {
+      setOpening(null);
       queued.current = [];
       launching.current = false;
     }
@@ -394,6 +397,7 @@ export default function App() {
         <HomeScreen
           drives={drives}
           ready={ready}
+          opening={opening}
           pickFolder={pickFolder}
           start={start}
           saved={saved}

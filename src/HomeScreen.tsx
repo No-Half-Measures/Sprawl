@@ -3,10 +3,11 @@ import { formatAge, formatSize, isDriveRoot, middlePath, staleness, type Drive, 
 interface Props {
   drives: Drive[];
   ready: boolean;
+  opening?: string | null;
   pickFolder: () => Promise<void>;
   start: (path: string) => Promise<void>;
   saved: SavedScan[];
-  openSaved: (path: string) => Promise<void>;
+  openSaved: (path: string, scannedAt: number) => Promise<void>;
   clearSaved: () => Promise<void>;
   now?: number;
 }
@@ -14,6 +15,7 @@ interface Props {
 export default function HomeScreen({
   drives,
   ready,
+  opening = null,
   pickFolder,
   start,
   saved,
@@ -21,6 +23,7 @@ export default function HomeScreen({
   clearSaved,
   now = Date.now(),
 }: Props) {
+  const disabled = !ready || opening !== null;
   const folders = saved.filter(s => !drives.some(d => isDriveRoot(s.path, d.mount)));
   return (
     <section className="home-content">
@@ -29,7 +32,7 @@ export default function HomeScreen({
         <p>Map a drive or folder. Follow the big pieces. Everything stays exactly where it is.</p>
         <button
           className="primary"
-          disabled={!ready}
+          disabled={disabled}
           onClick={() => void pickFolder()}
         >
           ▱ &nbsp; Scan a folder…
@@ -69,10 +72,10 @@ export default function HomeScreen({
                   <span>{formatSize(d.free)} free</span>
                   <div className="drive-actions">
                     {scan && (
-                      <button disabled={!ready} onClick={() => void openSaved(scan.path)}>Open last scan</button>
+                      <button disabled={disabled} onClick={() => void openSaved(scan.path, scan.scannedAt)}>{opening === scan.path ? 'Opening…' : 'Open last scan'}</button>
                     )}
                     <button
-                      disabled={!ready}
+                      disabled={disabled}
                       onClick={() => void start(d.mount)}
                     >
                       Scan drive
@@ -99,13 +102,13 @@ export default function HomeScreen({
                 <strong title={s.path}>{middlePath(s.path)}</strong>
                 <span className={staleness(s, undefined, now).old ? 'warning' : ''}>{formatAge(s.scannedAt, now)} · {formatSize(s.size)}</span>
               </div>
-              <button disabled={!ready} onClick={() => void openSaved(s.path)}>Open</button>
+              <button disabled={disabled} onClick={() => void openSaved(s.path, s.scannedAt)}>{opening === s.path ? 'Opening…' : 'Open'}</button>
             </div>
           ))}
         </section>
       )}
       {saved.length > 0 && (
-        <button className="clear-saved" disabled={!ready} onClick={() => void clearSaved()}>Clear saved scans</button>
+        <button className="clear-saved" disabled={disabled} onClick={() => void clearSaved()}>Clear saved scans</button>
       )}
       <footer className="home-footer">
         <span>Read-only by design</span>

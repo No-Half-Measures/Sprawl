@@ -7,7 +7,7 @@ use serde::Serialize;
 use std::{
     path::PathBuf,
     sync::{
-        Arc, Mutex,
+        Arc, Mutex, OnceLock,
         atomic::{AtomicBool, Ordering},
     },
 };
@@ -18,6 +18,34 @@ struct Session {
     generation: u64,
     cancel: Option<Arc<AtomicBool>>,
     tree: Option<Arc<Tree>>,
+    saved: Option<SavedScan>,
+    panels: Arc<RootPanels>,
+}
+
+#[derive(Default)]
+struct RootPanels {
+    largest: OnceLock<Result<Vec<scanner::LargeFile>, String>>,
+    breakdown: OnceLock<Result<Vec<scanner::Breakdown>, String>>,
+}
+
+impl Session {
+    fn open_saved(&mut self, path: &str, scanned_at: u64) -> Result<Option<LoadedScan>, String> {
+        if let Some(cancel) = self.cancel.take() {
+            cancel.store(true, Ordering::Relaxed);
+        }
+        self.generation += 1;
+        if let (Some(tree), Some(saved)) = (&self.tree, &self.saved)
+            && cache::key(&saved.path) == cache::key(path)
+            && saved.scanned_at == scanned_at
+        {
+            return Ok(Some(LoadedScan {
+                root: tree.view(0, 0, 0)?,
+                errors: tree.errors,
+                saved: saved.clone(),
+            }));
+        }
+        Ok(None)
+    }
 }
 #[derive(Default)]
 struct AppState {
@@ -124,6 +152,7 @@ struct LoadedScan {
 #[tauri::command]
 async fn load_saved_scan(
     path: String,
+    scanned_at: u64,
     app: tauri::AppHandle,
     state: State<'_, AppState>,
 ) -> Result<LoadedScan, String> {
@@ -132,10 +161,9 @@ async fn load_saved_scan(
             .session
             .lock()
             .map_err(|_| "Scan state is unavailable".to_string())?;
-        if let Some(cancel) = session.cancel.take() {
-            cancel.store(true, Ordering::Relaxed);
+        if let Some(loaded) = session.open_saved(&path, scanned_at)? {
+            return Ok(loaded);
         }
-        session.generation += 1;
         session.generation
     };
     let dir = scans_dir(&app)?;
@@ -162,9 +190,11 @@ async fn load_saved_scan(
             if session.generation != generation {
                 return Err("Another scan has started. Open the saved scan again.".into());
             }
+            session.saved = Some(loaded.saved.clone());
+            session.panels = Arc::default();
             session.tree.replace(tree)
         };
-        drop(previous);
+        std::thread::spawn(move || drop(previous));
         Ok(loaded)
     })
     .await
@@ -226,6 +256,8 @@ fn start_scan(
         }
         session.generation += 1;
         let previous = session.tree.take();
+        session.saved = None;
+        session.panels = Arc::default();
         session.cancel = Some(cancel.clone());
         (session.generation, previous)
     };
@@ -307,6 +339,8 @@ fn start_scan(
                         errors: tree.errors,
                     };
                     let tree = Arc::new(tree);
+                    let meta = scan_metadata(&tree);
+                    session.saved = Some(meta.clone());
                     session.tree = Some(tree.clone());
                     let _ = app.emit(
                         "scan-complete",
@@ -316,7 +350,6 @@ fn start_scan(
                         },
                     );
                     drop(session);
-                    let meta = scan_metadata(&tree);
                     let app = app.clone();
                     std::thread::spawn(move || {
                         let result = (|| {
@@ -396,20 +429,56 @@ async fn get_largest_files(
     limit: usize,
     state: State<'_, AppState>,
 ) -> Result<Vec<scanner::LargeFile>, String> {
-    let tree = tree(&state)?;
-    tauri::async_runtime::spawn_blocking(move || tree.largest(node_id, limit))
-        .await
-        .map_err(|e| e.to_string())?
+    let (tree, panels) = {
+        let session = state
+            .session
+            .lock()
+            .map_err(|_| "Scan state is unavailable".to_string())?;
+        (
+            session
+                .tree
+                .clone()
+                .ok_or("No completed scan. Choose a folder to begin.")?,
+            session.panels.clone(),
+        )
+    };
+    tauri::async_runtime::spawn_blocking(move || {
+        if node_id == 0 && limit == 50 {
+            panels.largest.get_or_init(|| tree.largest(0, 50)).clone()
+        } else {
+            tree.largest(node_id, limit)
+        }
+    })
+    .await
+    .map_err(|e| e.to_string())?
 }
 #[tauri::command]
 async fn get_type_breakdown(
     node_id: usize,
     state: State<'_, AppState>,
 ) -> Result<Vec<scanner::Breakdown>, String> {
-    let tree = tree(&state)?;
-    tauri::async_runtime::spawn_blocking(move || tree.breakdown(node_id))
-        .await
-        .map_err(|e| e.to_string())?
+    let (tree, panels) = {
+        let session = state
+            .session
+            .lock()
+            .map_err(|_| "Scan state is unavailable".to_string())?;
+        (
+            session
+                .tree
+                .clone()
+                .ok_or("No completed scan. Choose a folder to begin.")?,
+            session.panels.clone(),
+        )
+    };
+    tauri::async_runtime::spawn_blocking(move || {
+        if node_id == 0 {
+            panels.breakdown.get_or_init(|| tree.breakdown(0)).clone()
+        } else {
+            tree.breakdown(node_id)
+        }
+    })
+    .await
+    .map_err(|e| e.to_string())?
 }
 #[tauri::command]
 fn get_node_path(node_id: usize, state: State<'_, AppState>) -> Result<String, String> {
