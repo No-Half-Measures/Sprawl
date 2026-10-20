@@ -1,5 +1,7 @@
+mod cache;
 mod scanner;
 
+use cache::SavedScan;
 use scanner::{Kind, Tree};
 use serde::Serialize;
 use std::{
@@ -21,6 +23,7 @@ struct Session {
 struct AppState {
     session: Mutex<Session>,
     worker: Mutex<()>,
+    cache: Mutex<()>,
 }
 
 fn tree(state: &AppState) -> Result<Arc<Tree>, String> {
@@ -52,6 +55,137 @@ fn list_drives() -> Vec<Drive> {
             free: d.available_space(),
         })
         .collect()
+}
+
+fn scan_metadata(tree: &Tree) -> SavedScan {
+    let path = tree.root_path.to_string_lossy().into_owned();
+    let root = &tree.nodes[0];
+    let drives = list_drives();
+    let drive = drive_for_path(&path, &drives);
+    SavedScan {
+        version: cache::FORMAT_VERSION,
+        path,
+        scanned_at: std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_millis() as u64,
+        size: root.size,
+        files: root.files,
+        folders: root.folders,
+        errors: tree.errors,
+        drive_free: drive.map(|d| d.free),
+        drive_total: drive.map(|d| d.total),
+    }
+}
+
+fn drive_for_path<'a>(path: &str, drives: &'a [Drive]) -> Option<&'a Drive> {
+    let path = path.trim_end_matches(['\\', '/']).to_lowercase();
+    drives
+        .iter()
+        .filter(|d| {
+            let mount = d.mount.trim_end_matches(['\\', '/']).to_lowercase();
+            path == mount
+                || path
+                    .strip_prefix(&mount)
+                    .is_some_and(|s| s.starts_with(['\\', '/']))
+        })
+        .max_by_key(|d| d.mount.len())
+}
+
+fn scans_dir(app: &tauri::AppHandle) -> Result<PathBuf, String> {
+    app.path()
+        .app_local_data_dir()
+        .map(|p| p.join("scans"))
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+async fn list_saved_scans(app: tauri::AppHandle) -> Result<Vec<SavedScan>, String> {
+    let dir = scans_dir(&app)?;
+    tauri::async_runtime::spawn_blocking(move || {
+        let state = app.state::<AppState>();
+        let _cache = state
+            .cache
+            .lock()
+            .map_err(|_| "Saved scans are unavailable".to_string())?;
+        cache::list(&dir).map_err(|e| e.to_string())
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+#[derive(Serialize)]
+struct LoadedScan {
+    root: scanner::ViewNode,
+    errors: u64,
+    saved: SavedScan,
+}
+
+#[tauri::command]
+async fn load_saved_scan(
+    path: String,
+    app: tauri::AppHandle,
+    state: State<'_, AppState>,
+) -> Result<LoadedScan, String> {
+    let generation = {
+        let mut session = state
+            .session
+            .lock()
+            .map_err(|_| "Scan state is unavailable".to_string())?;
+        if let Some(cancel) = session.cancel.take() {
+            cancel.store(true, Ordering::Relaxed);
+        }
+        session.generation += 1;
+        session.generation
+    };
+    let dir = scans_dir(&app)?;
+    tauri::async_runtime::spawn_blocking(move || {
+        let state = app.state::<AppState>();
+        let (tree, saved) = {
+            let _cache = state
+                .cache
+                .lock()
+                .map_err(|_| "Saved scans are unavailable".to_string())?;
+            cache::load(&dir, &path)?
+        };
+        let loaded = LoadedScan {
+            root: tree.view(0, 0, 0)?,
+            errors: tree.errors,
+            saved,
+        };
+        let tree = Arc::new(tree);
+        let previous = {
+            let mut session = state
+                .session
+                .lock()
+                .map_err(|_| "Scan state is unavailable".to_string())?;
+            if session.generation != generation {
+                return Err("Another scan has started. Open the saved scan again.".into());
+            }
+            session.tree.replace(tree)
+        };
+        drop(previous);
+        Ok(loaded)
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+#[tauri::command]
+async fn clear_saved_scans(app: tauri::AppHandle) -> Result<(), String> {
+    let dir = scans_dir(&app)?;
+    tauri::async_runtime::spawn_blocking(move || {
+        let state = app.state::<AppState>();
+        let _cache = state
+            .cache
+            .lock()
+            .map_err(|_| "Saved scans are unavailable".to_string())?;
+        cache::clear(&dir).map_err(|e| e.to_string())?;
+        let _ = app.emit("saved-scans-changed", ());
+        Ok(())
+    })
+    .await
+    .map_err(|e| e.to_string())?
 }
 
 #[derive(Clone, Serialize)]
@@ -172,7 +306,8 @@ fn start_scan(
                         root,
                         errors: tree.errors,
                     };
-                    session.tree = Some(Arc::new(tree));
+                    let tree = Arc::new(tree);
+                    session.tree = Some(tree.clone());
                     let _ = app.emit(
                         "scan-complete",
                         ScanEvent {
@@ -180,6 +315,26 @@ fn start_scan(
                             data: completed,
                         },
                     );
+                    drop(session);
+                    let meta = scan_metadata(&tree);
+                    let app = app.clone();
+                    std::thread::spawn(move || {
+                        let result = (|| {
+                            let dir = scans_dir(&app)?;
+                            let state = app.state::<AppState>();
+                            let _cache = state
+                                .cache
+                                .lock()
+                                .map_err(|_| "Saved scans are unavailable".to_string())?;
+                            cache::save(&dir, &tree, &meta).map_err(|e| e.to_string())
+                        })();
+                        match result {
+                            Ok(()) => {
+                                let _ = app.emit("saved-scans-changed", ());
+                            }
+                            Err(e) => eprintln!("Could not save scan: {e}"),
+                        }
+                    });
                 }
                 Err(error) => {
                     let _ = app.emit(
@@ -262,7 +417,11 @@ fn get_node_path(node_id: usize, state: State<'_, AppState>) -> Result<String, S
 }
 #[tauri::command]
 fn reveal_in_explorer(node_id: usize, state: State<'_, AppState>) -> Result<(), String> {
-    tauri_plugin_opener::reveal_item_in_dir(tree(&state)?.path(node_id)?).map_err(|e| e.to_string())
+    let path = tree(&state)?.path(node_id)?;
+    if !path.exists() {
+        return Err("This item no longer exists. Rescan to refresh it.".into());
+    }
+    tauri_plugin_opener::reveal_item_in_dir(path).map_err(|e| e.to_string())
 }
 #[tauri::command]
 fn open_folder(node_id: usize, state: State<'_, AppState>) -> Result<(), String> {
@@ -272,7 +431,7 @@ fn open_folder(node_id: usize, state: State<'_, AppState>) -> Result<(), String>
     }
     let path = tree.path(node_id)?;
     if !std::fs::symlink_metadata(&path)
-        .map_err(|e| e.to_string())?
+        .map_err(|_| "This folder has changed. Rescan to refresh it.".to_string())?
         .is_dir()
     {
         return Err("This folder has changed. Rescan to refresh it.".into());
@@ -288,6 +447,9 @@ pub fn run() {
         .manage(AppState::default())
         .invoke_handler(tauri::generate_handler![
             list_drives,
+            list_saved_scans,
+            load_saved_scan,
+            clear_saved_scans,
             start_scan,
             cancel_scan,
             get_tree,

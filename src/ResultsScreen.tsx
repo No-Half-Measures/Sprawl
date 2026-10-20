@@ -3,13 +3,31 @@ import Treemap from './Treemap';
 import {
   categories,
   categoryColor,
+  formatAge,
+  formatScanDate,
   formatSize,
   percent,
+  staleness,
   type Breakdown,
   type Drive,
   type LargeFile,
+  type SavedScan,
   type TreeNode,
 } from './model';
+
+export function SnapshotBanner({ saved, drive, rescan, now = Date.now() }: { saved: SavedScan; drive?: Drive; rescan: () => void; now?: number }) {
+  const { old, freeDelta } = staleness(saved, drive, now);
+  return (
+    <div role="status" className={`banner snapshot ${old || freeDelta !== null ? 'warning' : ''}`}>
+      <span>
+        Snapshot from {formatScanDate(saved.scannedAt)} · {formatAge(saved.scannedAt, now)}
+        {old && ' · This may be out of date.'}
+        {freeDelta !== null && ` · Free space has changed by ${formatSize(Math.abs(freeDelta))} since this scan.`}
+      </span>
+      <button onClick={rescan}>Rescan</button>
+    </div>
+  );
+}
 
 interface Props {
   current: TreeNode;

@@ -1,6 +1,49 @@
-import { describe, expect, it } from 'vitest';
-import { categories, categoryFor, formatSize, isDriveRoot, percent, type TreeNode } from './model';
+import { afterEach, describe, expect, it, vi } from 'vitest';
+import { categories, categoryFor, formatAge, formatScanDate, formatSize, isDriveRoot, percent, staleness, type SavedScan, type TreeNode } from './model';
 import { fitLabel, layoutTree, textColor, wrapLabel } from './layout';
+
+afterEach(() => vi.useRealTimers());
+
+describe('saved scan dates and freshness', () => {
+  const now = new Date(2026, 9, 20, 15, 0).getTime();
+  const scan: SavedScan = { version: 1, path: 'C:\\', scannedAt: now, size: 1, files: 1, folders: 0, errors: 0, driveFree: 100 * 1024 ** 3, driveTotal: 500 * 1024 ** 3 };
+  const drive = { mount: 'C:\\', label: 'Disk', free: 100 * 1024 ** 3, total: 500 * 1024 ** 3 };
+  it('formats relative ages at unit boundaries', () => {
+    for (const [age, text] of [
+      [-1, 'just now'], [0, 'just now'], [59999, 'just now'],
+      [60000, '1 minute ago'], [300000, '5 minutes ago'], [3599999, '59 minutes ago'],
+      [3600000, '1 hour ago'], [10800000, '3 hours ago'], [86399999, '23 hours ago'],
+      [86400000, 'yesterday'], [3 * 86400000, '3 days ago'],
+      [7 * 86400000, '1 week ago'], [14 * 86400000, '2 weeks ago'],
+      [30 * 86400000, '1 month ago'], [90 * 86400000, '3 months ago'],
+      [365 * 86400000, '1 year ago'], [730 * 86400000, '2 years ago'],
+    ] as const) expect(formatAge(now - age, now)).toBe(text);
+  });
+  it('formats a local en-GB date and includes the year only for other years', () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(now);
+    expect(formatScanDate(new Date(2026, 9, 13, 14, 2).getTime())).toBe('13 Oct, 14:02');
+    expect(formatScanDate(new Date(2025, 9, 13, 14, 2).getTime())).toBe('13 Oct 2025, 14:02');
+  });
+  it('warns only beyond seven days', () => {
+    expect(staleness(scan, drive, now + 7 * 86400000)).toEqual({ old: false, freeDelta: null });
+    expect(staleness(scan, drive, now + 7 * 86400000 + 1)).toEqual({ old: true, freeDelta: null });
+  });
+  it('uses the larger of 1 GiB and 1% of current drive capacity, in either direction', () => {
+    const threshold = drive.total * .01;
+    expect(staleness(scan, { ...drive, free: drive.free + threshold - 1 }, now).freeDelta).toBeNull();
+    expect(staleness(scan, { ...drive, free: drive.free + threshold }, now).freeDelta).toBe(threshold);
+    expect(staleness(scan, { ...drive, free: drive.free - threshold }, now).freeDelta).toBe(-threshold);
+    const small = { ...drive, total: 50 * 1024 ** 3 };
+    expect(staleness(scan, { ...small, free: drive.free + 1024 ** 3 - 1 }, now).freeDelta).toBeNull();
+    expect(staleness(scan, { ...small, free: drive.free + 1024 ** 3 }, now).freeDelta).toBe(1024 ** 3);
+    expect(staleness({ ...scan, driveFree: 0 }, { ...small, free: 1024 ** 3 }, now).freeDelta).toBe(1024 ** 3);
+  });
+  it('has no space warning without a drive or saved free space', () => {
+    expect(staleness(scan, undefined, now).freeDelta).toBeNull();
+    expect(staleness({ ...scan, driveFree: null, driveTotal: null }, drive, now).freeDelta).toBeNull();
+  });
+});
 
 describe('drive root matching', () => {
   it('ignores case and trailing separators without matching folders', () => {

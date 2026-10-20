@@ -4,7 +4,7 @@ import { listen, type UnlistenFn } from '@tauri-apps/api/event';
 import { open } from '@tauri-apps/plugin-dialog';
 import HomeScreen from './HomeScreen';
 import ScanScreen from './ScanScreen';
-import ResultsScreen from './ResultsScreen';
+import ResultsScreen, { SnapshotBanner } from './ResultsScreen';
 import {
   emptyProgress,
   isDriveRoot,
@@ -12,6 +12,7 @@ import {
   type Drive,
   type LargeFile,
   type Progress,
+  type SavedScan,
   type TreeNode,
 } from './model';
 import './App.css';
@@ -41,6 +42,8 @@ function findTrail(root: TreeNode, id: number): TreeNode[] | null {
 export default function App() {
   const [phase, setPhase] = useState<Phase>('home');
   const [drives, setDrives] = useState<Drive[]>([]);
+  const [saved, setSaved] = useState<SavedScan[]>([]);
+  const [snapshot, setSnapshot] = useState<SavedScan | null>(null);
   const [ready, setReady] = useState(false);
   const [error, setError] = useState('');
   const [notice, setNotice] = useState('');
@@ -64,6 +67,10 @@ export default function App() {
   }[]>([]);
   const launching = useRef(false);
   const handler = useRef<(type: string, message: ScanMessage) => void>(() => { });
+  async function refreshSaved() {
+    try { setSaved(await invoke<SavedScan[]>('list_saved_scans')); }
+    catch (e) { setError(String(e)); }
+  }
   useEffect(() => {
     if (!notice) return;
     const timeout = window.setTimeout(() => setNotice(''), 3000);
@@ -108,11 +115,23 @@ export default function App() {
           }
           listeners.push(stop);
         }
+        const stop = await listen('saved-scans-changed', () => void refreshSaved());
+        if (disposed) { stop(); return; }
+        listeners.push(stop);
         if (!disposed) setReady(true);
       } catch (e) {
         if (!disposed) setError(`Desktop connection unavailable: ${String(e)}`);
       }
     })();
+    return () => {
+      disposed = true;
+      listeners.forEach(stop => stop());
+    };
+  }, []);
+  useEffect(() => {
+    if (phase !== 'home') return;
+    let disposed = false;
+    void refreshSaved();
     invoke<Drive[]>('list_drives').then(d => {
       if (!disposed) {
         setDrives(d.sort((a, b) => a.mount.localeCompare(b.mount, 'en-GB', {
@@ -125,9 +144,8 @@ export default function App() {
     });
     return () => {
       disposed = true;
-      listeners.forEach(stop => stop());
     };
-  }, []);
+  }, [phase]);
   const currentId = trail[trail.length - 1]?.id;
   useEffect(() => {
     if (phase !== 'results' || currentId == null) return;
@@ -165,6 +183,7 @@ export default function App() {
     launching.current = true;
     queued.current = [];
     scanId.current = null;
+    setSnapshot(null);
     setError('');
     setNotice('');
     setScanPath(path);
@@ -185,6 +204,34 @@ export default function App() {
       setError(String(e));
       setPhase('home');
     }
+  }
+  async function openSaved(path: string) {
+    if (launching.current) return;
+    launching.current = true;
+    scanId.current = null;
+    queued.current = [];
+    setError('');
+    setNotice('');
+    try {
+      const loaded = await invoke<{ root: TreeNode; errors: number; saved: SavedScan }>('load_saved_scan', { path });
+      setScanPath(loaded.saved.path);
+      setSnapshot(loaded.saved);
+      setSkipped(loaded.errors);
+      setTrail([loaded.root]);
+      setHistory([]);
+      setCancelling(false);
+      setPhase('results');
+    } catch (e) {
+      setError(String(e));
+      void refreshSaved();
+    } finally {
+      queued.current = [];
+      launching.current = false;
+    }
+  }
+  async function clearSaved() {
+    try { await invoke('clear_saved_scans'); await refreshSaved(); }
+    catch (e) { setError(String(e)); }
   }
   async function pickFolder() {
     try {
@@ -283,7 +330,8 @@ export default function App() {
   }
   const current = trail[trail.length - 1];
   const linkedHover = tree && hover !== null ? findTrail(tree, hover)?.[0]?.id ?? hover : null;
-  const drive = drives.find(d => isDriveRoot(scanPath, d.mount) || scanPath.toLowerCase().startsWith(d.mount.toLowerCase()));
+  const drive = drives.filter(d => isDriveRoot(scanPath, d.mount) || scanPath.toLowerCase().startsWith(d.mount.toLowerCase()))
+    .sort((a, b) => b.mount.length - a.mount.length)[0];
   const parentSize = trail.length > 1
     ? trail[trail.length - 2].size
     : drive?.total;
@@ -348,6 +396,9 @@ export default function App() {
           ready={ready}
           pickFolder={pickFolder}
           start={start}
+          saved={saved}
+          openSaved={openSaved}
+          clearSaved={clearSaved}
         />
       )}
       {phase === 'scanning' && (
@@ -356,6 +407,9 @@ export default function App() {
           cancelling={cancelling}
           cancel={cancel}
         />
+      )}
+      {phase === 'results' && snapshot && (
+        <SnapshotBanner saved={snapshot} drive={drive} rescan={() => void start(scanPath)} />
       )}
       {phase === 'results' && current && (
         <ResultsScreen

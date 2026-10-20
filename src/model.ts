@@ -4,10 +4,37 @@ export interface TreeNode { id: number | null; name: string; kind: 'dir' | 'file
 export interface LargeFile { id: number; name: string; relativePath: string; size: number; category: string }
 export interface Breakdown { category: string; bytes: number; files: number }
 export interface Drive { mount: string; label: string; total: number; free: number }
+export interface SavedScan { version: number; path: string; scannedAt: number; size: number; files: number; folders: number; errors: number; driveFree: number | null; driveTotal: number | null }
 export interface Progress { files: number; folders: number; bytes: number; errors: number; currentPath: string }
 export const emptyProgress: Progress = { files: 0, folders: 0, bytes: 0, errors: 0, currentPath: '' };
 export function isDriveRoot(path: string, mount: string): boolean {
   return path.replace(/[\\/]+$/, '').toLowerCase() === mount.replace(/[\\/]+$/, '').toLowerCase();
+}
+export function formatAge(ms: number, now = Date.now()): string {
+  const minutes = Math.floor(Math.max(0, now - ms) / 60000);
+  if (minutes < 1) return 'just now';
+  if (minutes < 60) return `${minutes} minute${minutes === 1 ? '' : 's'} ago`;
+  const hours = Math.floor(minutes / 60);
+  if (hours < 24) return `${hours} hour${hours === 1 ? '' : 's'} ago`;
+  const days = Math.floor(hours / 24);
+  if (days === 1) return 'yesterday';
+  if (days < 7) return `${days} days ago`;
+  if (days < 30) { const weeks = Math.floor(days / 7); return `${weeks} week${weeks === 1 ? '' : 's'} ago`; }
+  if (days < 365) { const months = Math.floor(days / 30); return `${months} month${months === 1 ? '' : 's'} ago`; }
+  const years = Math.floor(days / 365);
+  return `${years} year${years === 1 ? '' : 's'} ago`;
+}
+export function formatScanDate(ms: number): string {
+  const date = new Date(ms);
+  const day = date.toLocaleDateString('en-GB', { day: 'numeric', month: 'short', ...(date.getFullYear() !== new Date().getFullYear() ? { year: 'numeric' } : {}) });
+  return `${day}, ${date.toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit' })}`;
+}
+export function staleness(saved: SavedScan, drive: Drive | undefined, now = Date.now()): { old: boolean; freeDelta: number | null } {
+  const delta = drive && saved.driveFree != null ? drive.free - saved.driveFree : null;
+  return {
+    old: now - saved.scannedAt > 7 * 86400000,
+    freeDelta: delta !== null && Math.abs(delta) >= Math.max(1024 ** 3, (drive?.total ?? 0) * .01) ? delta : null,
+  };
 }
 export function formatSize(bytes: number): string {
   if (!Number.isFinite(bytes) || bytes <= 0) return '0 B';

@@ -1,4 +1,7 @@
-use crate::scanner::{self, Kind, Tree};
+use crate::{
+    cache::{self, SavedScan},
+    scanner::{self, Kind, Tree},
+};
 use std::{fs, path::Path, sync::atomic::AtomicBool, time::Instant};
 
 fn fixture() -> (tempfile::TempDir, Tree) {
@@ -12,6 +15,222 @@ fn fixture() -> (tempfile::TempDir, Tree) {
         .unwrap()
         .unwrap();
     (dir, tree)
+}
+
+fn saved(tree: &Tree, scanned_at: u64) -> SavedScan {
+    let root = &tree.nodes[0];
+    SavedScan {
+        version: cache::FORMAT_VERSION,
+        path: tree.root_path.to_string_lossy().into_owned(),
+        scanned_at,
+        size: root.size,
+        files: root.files,
+        folders: root.folders,
+        errors: tree.errors,
+        drive_free: Some(100),
+        drive_total: Some(1000),
+    }
+}
+
+#[test]
+fn drive_metadata_uses_the_longest_mount_prefix() {
+    let drives = [r"C:\", r"C:\Mounted", r"D:\"].map(|mount| crate::Drive {
+        mount: mount.into(),
+        label: String::new(),
+        total: 1000,
+        free: 100,
+    });
+    for (path, expected) in [
+        (r"c:\MOUNTED\folder", Some(r"C:\Mounted")),
+        ("c:\\mounted/", Some(r"C:\Mounted")),
+        (r"C:\MountedElsewhere", Some(r"C:\")),
+        ("c:", Some(r"C:\")),
+        (r"E:\folder", None),
+    ] {
+        assert_eq!(
+            crate::drive_for_path(path, &drives).map(|d| d.mount.as_str()),
+            expected
+        );
+    }
+}
+
+#[test]
+fn saved_scan_round_trip() {
+    let (_fixture, mut tree) = fixture();
+    tree.errors = 3;
+    let dir = tempfile::tempdir().unwrap();
+    let meta = saved(&tree, 123);
+    cache::save(dir.path(), &tree, &meta).unwrap();
+    let (loaded, loaded_meta) = cache::load(dir.path(), &meta.path).unwrap();
+    assert_eq!(loaded_meta, meta);
+    assert_eq!(loaded.nodes.len(), tree.nodes.len());
+    assert_eq!(loaded.root_path, tree.root_path);
+    assert_eq!(
+        serde_json::to_value(&loaded).unwrap(),
+        serde_json::to_value(&tree).unwrap()
+    );
+    assert_eq!(
+        serde_json::to_value(loaded.view(0, 3, 100).unwrap()).unwrap(),
+        serde_json::to_value(tree.view(0, 3, 100).unwrap()).unwrap()
+    );
+    assert_eq!(
+        cache::list(dir.path()).unwrap(),
+        std::slice::from_ref(&meta)
+    );
+    let json: serde_json::Value = serde_json::from_slice(
+        &fs::read(dir.path().join(format!("{}.json", cache::key(&meta.path)))).unwrap(),
+    )
+    .unwrap();
+    assert_eq!(json["scannedAt"], 123);
+    assert_eq!(json["driveFree"], 100);
+}
+
+#[test]
+fn saved_scan_keys_and_overwrite() {
+    let (_fixture, mut tree) = fixture();
+    let dir = tempfile::tempdir().unwrap();
+    tree.root_path = r"C:\Example".into();
+    let first = saved(&tree, 1);
+    cache::save(dir.path(), &tree, &first).unwrap();
+    tree.root_path = "c:\\EXAMPLE\\".into();
+    tree.nodes[0].size += 1;
+    let second = saved(&tree, 2);
+    assert_eq!(cache::key(&first.path), cache::key(&second.path));
+    assert_eq!(cache::key("HELLO//"), "a430d84680aabd0b");
+    fs::write(dir.path().join("orphan.tree"), b"orphan").unwrap();
+    fs::write(dir.path().join("orphan.tree.tmp"), b"partial").unwrap();
+    cache::save(dir.path(), &tree, &second).unwrap();
+    assert_eq!(
+        cache::list(dir.path()).unwrap(),
+        std::slice::from_ref(&second)
+    );
+    assert_eq!(cache::load(dir.path(), &first.path).unwrap().1, second);
+    cache::save(dir.path(), &tree, &first).unwrap();
+    assert_eq!(cache::load(dir.path(), &first.path).unwrap().1, second);
+    assert_eq!(fs::read_dir(dir.path()).unwrap().count(), 2);
+}
+
+#[test]
+fn saved_scan_retention_keeps_newest_ten() {
+    let (_fixture, mut tree) = fixture();
+    let dir = tempfile::tempdir().unwrap();
+    for i in (0..12).rev() {
+        tree.root_path = format!("C:\\folder{i}").into();
+        cache::save(dir.path(), &tree, &saved(&tree, i)).unwrap();
+    }
+    let scans = cache::list(dir.path()).unwrap();
+    assert_eq!(
+        scans.iter().map(|s| s.scanned_at).collect::<Vec<_>>(),
+        (2..12).rev().collect::<Vec<_>>()
+    );
+    assert_eq!(fs::read_dir(dir.path()).unwrap().count(), 20);
+    for scan in scans {
+        assert!(cache::load(dir.path(), &scan.path).is_ok());
+    }
+}
+
+#[test]
+fn invalid_saved_scans_and_orphans_are_removed() {
+    let (_fixture, tree) = fixture();
+    let dir = tempfile::tempdir().unwrap();
+    let meta = saved(&tree, 1);
+    let key = cache::key(&meta.path);
+    let tree_path = dir.path().join(format!("{key}.tree"));
+    let meta_path = tree_path.with_extension("json");
+    for fault in [
+        "tree",
+        "header version",
+        "meta",
+        "meta version",
+        "missing tree",
+    ] {
+        for listing_first in [false, true] {
+            cache::save(dir.path(), &tree, &meta).unwrap();
+            match fault {
+                "tree" => fs::write(&tree_path, b"corrupt").unwrap(),
+                "header version" => {
+                    let mut bytes = fs::read(&tree_path).unwrap();
+                    bytes[8..12].copy_from_slice(&(cache::FORMAT_VERSION + 1).to_le_bytes());
+                    fs::write(&tree_path, bytes).unwrap();
+                }
+                "meta" => fs::write(&meta_path, b"bad json").unwrap(),
+                "meta version" => fs::write(
+                    &meta_path,
+                    serde_json::to_vec(&SavedScan {
+                        version: cache::FORMAT_VERSION + 1,
+                        ..meta.clone()
+                    })
+                    .unwrap(),
+                )
+                .unwrap(),
+                _ => fs::remove_file(&tree_path).unwrap(),
+            }
+            if listing_first {
+                assert!(cache::list(dir.path()).unwrap().is_empty(), "{fault}");
+            }
+            assert_eq!(
+                cache::load(dir.path(), &meta.path).err().unwrap(),
+                "This saved scan can't be opened. Scan again to refresh it."
+            );
+            assert!(!tree_path.exists());
+            assert!(!meta_path.exists());
+            assert!(cache::list(dir.path()).unwrap().is_empty());
+        }
+    }
+    fs::write(dir.path().join("orphan.tree"), b"orphan").unwrap();
+    fs::write(dir.path().join("orphan.tree.tmp"), b"partial").unwrap();
+    fs::write(dir.path().join("orphan.json.tmp"), b"partial").unwrap();
+    assert!(cache::list(dir.path()).unwrap().is_empty());
+    assert_eq!(fs::read_dir(dir.path()).unwrap().count(), 0);
+}
+
+#[test]
+fn corrupt_saved_payloads_fail_cleanly() {
+    let (_fixture, mut tree) = fixture();
+    let dir = tempfile::tempdir().unwrap();
+    let meta = saved(&tree, 1);
+    let path = dir.path().join(format!("{}.tree", cache::key(&meta.path)));
+    for truncated in [false, true] {
+        cache::save(dir.path(), &tree, &meta).unwrap();
+        let mut bytes = fs::read(&path).unwrap();
+        if truncated {
+            bytes.truncate(bytes.len() - 4);
+        } else {
+            *bytes.last_mut().unwrap() ^= 1;
+        }
+        fs::write(&path, bytes).unwrap();
+        assert_eq!(
+            cache::list(dir.path()).unwrap(),
+            std::slice::from_ref(&meta)
+        );
+        assert_eq!(
+            cache::load(dir.path(), &meta.path).err().unwrap(),
+            "This saved scan can't be opened. Scan again to refresh it."
+        );
+        assert!(!path.exists());
+        assert!(!path.with_extension("json").exists());
+        assert!(cache::list(dir.path()).unwrap().is_empty());
+    }
+    tree.nodes[0].children.push(usize::MAX);
+    cache::save(dir.path(), &tree, &meta).unwrap();
+    assert!(cache::load(dir.path(), &meta.path).is_err());
+    assert!(cache::list(dir.path()).unwrap().is_empty());
+}
+
+#[test]
+fn clear_saved_scans_removes_everything() {
+    let (_fixture, tree) = fixture();
+    let dir = tempfile::tempdir().unwrap();
+    let scans = dir.path().join("scans");
+    assert!(cache::list(&scans).unwrap().is_empty());
+    cache::clear(&scans).unwrap();
+    cache::save(&scans, &tree, &saved(&tree, 1)).unwrap();
+    fs::write(scans.join("unfinished.tmp"), b"partial").unwrap();
+    fs::create_dir(scans.join("leftover")).unwrap();
+    fs::write(scans.join("leftover/file"), b"partial").unwrap();
+    cache::clear(&scans).unwrap();
+    assert!(cache::list(&scans).unwrap().is_empty());
+    assert!(!scans.exists());
 }
 
 #[test]

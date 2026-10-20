@@ -40,7 +40,7 @@ pub fn category(name: &str) -> String {
         .into()
 }
 
-#[derive(Clone, Copy, PartialEq, Eq, Serialize, Debug)]
+#[derive(Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Debug)]
 #[serde(rename_all = "lowercase")]
 pub enum Kind {
     Dir,
@@ -48,6 +48,7 @@ pub enum Kind {
     Other,
 }
 
+#[derive(Serialize, Deserialize)]
 pub struct Node {
     pub name: String,
     pub parent: Option<usize>,
@@ -59,6 +60,7 @@ pub struct Node {
     pub category: Option<String>,
 }
 
+#[derive(Serialize, Deserialize)]
 pub struct Tree {
     pub nodes: Vec<Node>,
     pub root_path: PathBuf,
