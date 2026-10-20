@@ -57,3 +57,9 @@ tries a symlink, then a Windows junction, and reports a skip if neither is allow
 The tree is a snapshot: files can change or disappear after scanning. Rescan to
 refresh it. Aggregates have no filesystem path, so cannot be opened or revealed.
 Zero-byte items remain available in Contents but occupy no treemap area.
+
+Completed scans are saved automatically in the app's local data directory under
+`scans/`. Home can reopen the last scan of a drive or a recent folder without
+rescanning. One snapshot per path is kept, up to ten paths; **Clear saved scans**
+removes this cache. Saved results show their date and warn after seven days or a
+significant change in drive free space. **Rescan** refreshes the snapshot.

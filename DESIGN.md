@@ -32,6 +32,9 @@ DiskMapper shows where disk space goes. You pick a drive or folder, it scans, an
 | Command | Returns |
 | --- | --- |
 | `list_drives()` | `[{ mount, label, total, free }]` |
+| `list_saved_scans()` | Saved scan metadata, newest first |
+| `load_saved_scan(path)` | Opens a saved tree and returns its root, skipped count, and metadata |
+| `clear_saved_scans()` | Removes all saved scans |
 | `start_scan(path)` | starts a background scan, returns immediately |
 | `cancel_scan()` | — |
 | `get_tree(nodeId?, depth, maxChildren)` | Subtree rooted at the node (the root if omitted), trimmed to `depth` levels. Each folder includes at most `maxChildren` children, and anything beyond that is merged into one synthetic `"N smaller items"` entry, so treemap totals still add up. |
@@ -43,6 +46,11 @@ The IPC node shape is `{ id, name, kind: "dir" | "file" | "other", size, files, 
 
 ### File categories
 Files are grouped by extension into Video, Images, Audio, Documents, Archives, Code, Apps & system (exe/dll/sys/msi…), and Other. The mapping lives in one place, and the frontend uses the same category list for colors.
+
+### Saved scans
+- Completed scans are saved in the app's local data directory under `scans/`, using streaming bincode + zstd and a JSON metadata sidecar written last. Cancelled and failed scans are never saved.
+- Each path keeps one snapshot; the ten newest snapshots are retained. Paths match without case or trailing separators. Listing checks metadata and tree file headers and discards invalid entries and orphan files. Loading checks compressed stream integrity and validates the decoded tree, deleting corrupt entries.
+- Home shows each drive's last scan and recent folders. Saved results show a snapshot banner with Rescan, warning after seven days or when drive free space changes by at least 1 GiB or 1% of drive capacity, whichever is larger.
 
 ## UI
 
@@ -84,4 +92,4 @@ A calm, clean, dark-first look that also respects the system light theme. There 
 - Frontend: Vitest covers size formatting, category mapping, and treemap layout (areas proportional, nothing overlapping, small items culled).
 
 ## Out of scope (v1)
-- Deleting or moving files, NTFS MFT fast-scan, duplicate detection, saving or exporting scans.
+- Deleting or moving files, NTFS MFT fast-scan, duplicate detection, exporting scans.
