@@ -58,6 +58,8 @@ describe('screen details', () => {
     expect(html).toContain(`<span class="large-size"><strong>${formatSize(9999)}</strong>`);
     expect(html).toContain(`<small>${percent(9999, 10000)}</small></span>`);
     expect(html).toContain('aria-label="Up one folder (Alt+↑)"');
+    expect(html).toContain('role="separator" aria-orientation="horizontal" aria-label="Resize contents and largest files" aria-valuemin="20" aria-valuemax="80" aria-valuenow="48"');
+    expect(html).toContain('<aside class="details-panel" style="--contents:48fr;--largest:52fr">');
   });
 
   it('renders used, free and total capacity for a whole-drive scan', () => {

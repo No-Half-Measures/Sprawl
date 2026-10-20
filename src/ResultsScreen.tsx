@@ -1,3 +1,4 @@
+import { useState, type CSSProperties } from 'react';
 import Treemap from './Treemap';
 import {
   categories,
@@ -63,6 +64,21 @@ export default function ResultsScreen({
   context,
   action,
 }: Props) {
+  const [split, setSplit] = useState(() => {
+    try {
+      const saved = localStorage.getItem('diskmapper.split');
+      const value = saved?.trim() ? Number(saved) : NaN;
+      return Number.isFinite(value) ? Math.max(20, Math.min(80, value)) : 48;
+    } catch { return 48; }
+  });
+  const [dragging, setDragging] = useState(false);
+  const updateSplit = (value: number, persist = false) => {
+    const next = Math.max(20, Math.min(80, value));
+    setSplit(next);
+    if (persist) {
+      try { localStorage.setItem('diskmapper.split', String(next)); } catch {}
+    }
+  };
   const visibleBreakdown = breakdown.filter(b => b.bytes > 0);
   const currentPath = trail.length > 1
     ? `${scanPath.replace(/[\\/]$/, '')}\\${trail.slice(1).map(n => n.name).join('\\')}`
@@ -172,7 +188,7 @@ export default function ResultsScreen({
             </div>
           )}
         </section>
-        <aside className="details-panel">
+        <aside className="details-panel" style={{ '--contents': `${split}fr`, '--largest': `${100 - split}fr` } as CSSProperties}>
           <section className="contents-panel">
             <div className="section-heading">
               <h2>Contents</h2>
@@ -241,6 +257,46 @@ export default function ResultsScreen({
               )}
             </div>
           </section>
+          <div
+            className={`panel-divider${dragging ? ' dragging' : ''}`}
+            role="separator"
+            aria-orientation="horizontal"
+            aria-label="Resize contents and largest files"
+            aria-valuemin={20}
+            aria-valuemax={80}
+            aria-valuenow={Math.round(split)}
+            tabIndex={0}
+            onPointerDown={e => {
+              if (e.button !== 0 || dragging) return;
+              e.preventDefault();
+              e.currentTarget.focus();
+              e.currentTarget.setPointerCapture(e.pointerId);
+              setDragging(true);
+            }}
+            onPointerMove={e => {
+              if (!e.currentTarget.hasPointerCapture(e.pointerId)) return;
+              const rect = e.currentTarget.parentElement!.getBoundingClientRect();
+              if (rect.height > 0) updateSplit((e.clientY - rect.top) / rect.height * 100);
+            }}
+            onPointerUp={e => {
+              if (!e.currentTarget.hasPointerCapture(e.pointerId)) return;
+              e.currentTarget.releasePointerCapture(e.pointerId);
+              setDragging(false);
+              updateSplit(split, true);
+            }}
+            onPointerCancel={() => {
+              setDragging(false);
+              updateSplit(split, true);
+            }}
+            onLostPointerCapture={() => setDragging(false)}
+            onKeyDown={e => {
+              const next = e.key === 'ArrowUp' ? split - 5 : e.key === 'ArrowDown' ? split + 5 : e.key === 'Home' ? 20 : e.key === 'End' ? 80 : null;
+              if (next === null) return;
+              e.preventDefault();
+              updateSplit(next, true);
+            }}
+            onDoubleClick={() => updateSplit(48, true)}
+          />
           <section className="largest-panel">
             <div className="section-heading">
               <h2>Largest files</h2>
