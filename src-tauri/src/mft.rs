@@ -1,13 +1,55 @@
 use crate::scanner::{self, Counters, Kind, Node, Progress, Tree};
-use rayon::prelude::*;
 use std::{
     io,
     path::{Path, PathBuf},
     sync::atomic::{AtomicBool, Ordering},
 };
 
+#[cfg(windows)]
+use std::{
+    fs::File,
+    os::windows::io::{AsRawHandle, FromRawHandle, OwnedHandle},
+};
+#[cfg(windows)]
+use windows_sys::Win32::{
+    Foundation::ERROR_IO_PENDING,
+    Storage::FileSystem::ReadFile,
+    System::{
+        IO::{CancelIoEx, GetOverlappedResult, OVERLAPPED, OVERLAPPED_0, OVERLAPPED_0_0},
+        Threading::{CreateEventW, ResetEvent},
+    },
+};
+
 const REFERENCE_MASK: u64 = (1 << 48) - 1;
+const CHUNK_SIZE: usize = 4 * 1024 * 1024;
+const IO_ALIGNMENT: usize = 4096;
+const READ_QUEUE_DEPTH: usize = 8;
+const READ_BUFFER_COUNT: usize = 16;
 type Result<T> = std::result::Result<T, &'static str>;
+
+#[derive(Clone)]
+#[repr(C, align(4096))]
+struct AlignedBlock([u8; IO_ALIGNMENT]);
+
+struct AlignedBuffer {
+    blocks: Vec<AlignedBlock>,
+    len: usize,
+}
+
+impl AlignedBuffer {
+    fn new(len: usize) -> Self {
+        Self {
+            blocks: vec![AlignedBlock([0; IO_ALIGNMENT]); len.div_ceil(IO_ALIGNMENT)],
+            len,
+        }
+    }
+
+    fn as_mut_slice(&mut self) -> &mut [u8] {
+        // SAFETY: each block is exactly 4096 initialized bytes with no padding.
+        // The contiguous allocation covers len bytes and is exclusively borrowed.
+        unsafe { std::slice::from_raw_parts_mut(self.blocks.as_mut_ptr().cast(), self.len) }
+    }
+}
 
 #[derive(Debug, PartialEq, Eq)]
 pub(crate) struct BootSector {
@@ -65,6 +107,8 @@ pub(crate) fn parse_boot_sector(buf: &[u8]) -> Result<BootSector> {
 pub(crate) struct Link {
     pub parent: u64,
     pub name: String,
+    // Unused for directories; their category is assigned by finish's rollup.
+    pub category: u8,
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -206,6 +250,11 @@ pub(crate) fn parse_record(buf: &mut [u8], number: u64) -> Result<Option<Record>
                     .collect();
                     let link = Link {
                         parent: u64_at(value, 0)? & REFERENCE_MASK,
+                        category: if record.directory {
+                            0
+                        } else {
+                            scanner::category(&name)
+                        },
                         name,
                     };
                     if !record.names.contains(&link) {
@@ -333,7 +382,8 @@ pub(crate) fn build_tree(
     if !root.directory || root.excluded {
         return None;
     }
-    let mut children: Vec<Vec<(usize, String)>> = (0..bases.len()).map(|_| Vec::new()).collect();
+    let mut children: Vec<Vec<(usize, String, u8)>> =
+        (0..bases.len()).map(|_| Vec::new()).collect();
     for (number, record) in bases.iter_mut().enumerate() {
         if cancel.load(Ordering::Relaxed) {
             return None;
@@ -344,15 +394,17 @@ pub(crate) fn build_tree(
         if number < 24 || record.excluded {
             continue;
         }
-        record
-            .names
-            .sort_unstable_by(|a, b| a.parent.cmp(&b.parent).then_with(|| a.name.cmp(&b.name)));
-        record.names.dedup();
+        if record.names.len() > 1 {
+            record
+                .names
+                .sort_unstable_by(|a, b| a.parent.cmp(&b.parent).then_with(|| a.name.cmp(&b.name)));
+            record.names.dedup();
+        }
         for link in std::mem::take(&mut record.names) {
             if let Ok(parent) = usize::try_from(link.parent)
                 && let Some(children) = children.get_mut(parent)
             {
-                children.push((number, link.name));
+                children.push((number, link.name, link.category));
             }
         }
     }
@@ -383,7 +435,9 @@ pub(crate) fn build_tree(
         }
         let (parent, number) = queue[next];
         next += 1;
-        for (number, name) in std::mem::take(&mut children[number]) {
+        // Reserve once for this parent rather than repeatedly growing its child list.
+        tree.nodes[parent].children.reserve(children[number].len());
+        for (number, name, category) in std::mem::take(&mut children[number]) {
             if cancel.load(Ordering::Relaxed) {
                 return None;
             }
@@ -400,7 +454,7 @@ pub(crate) fn build_tree(
                 Kind::File
             };
             let id = tree.nodes.len();
-            let category = (kind == Kind::File).then(|| scanner::category(&name));
+            let category = (kind == Kind::File).then_some(category);
             tree.nodes.push(Node {
                 name,
                 parent: Some(parent),
@@ -430,60 +484,290 @@ pub(crate) fn scan_volume(
     cancel: &AtomicBool,
     report: &(impl Fn(Progress) + Sync),
 ) -> std::result::Result<Option<Tree>, String> {
-    use std::{fs::File, os::windows::fs::FileExt};
+    use windows_sys::Win32::Storage::FileSystem::FILE_FLAG_NO_BUFFERING;
 
     if cancel.load(Ordering::Relaxed) {
         return Ok(None);
     }
     let drive = scanner::drive_letter(root_path).ok_or("Not a local drive root")?;
-    let volume = File::open(format!(r"\\.\{}:", char::from(drive)))
-        .map_err(|e| format!("Cannot open volume: {e}"))?;
-    read_mft(
-        |mut offset, mut buf| {
-            while !buf.is_empty() {
-                match volume.seek_read(buf, offset) {
-                    Ok(0) => return Err(io::Error::from(io::ErrorKind::UnexpectedEof)),
-                    Ok(read) => {
-                        offset += read as u64;
-                        buf = &mut buf[read..];
-                    }
-                    Err(e) if e.kind() == io::ErrorKind::Interrupted => continue,
-                    Err(e) => return Err(e),
-                }
-            }
-            Ok(())
-        },
-        root_path,
-        cancel,
-        report,
+    let volume = open_mft(
+        Path::new(&format!(r"\\.\{}:", char::from(drive))),
+        FILE_FLAG_NO_BUFFERING,
     )
+    .map_err(|e| format!("Cannot open volume: {e}"))?;
+    read_mft(&volume, root_path, cancel, report)
 }
 
-// Raw volume I/O must use sector-aligned offsets and lengths, even for small records.
-fn read_aligned(
-    read_at: &(impl Fn(u64, &mut [u8]) -> io::Result<()> + Sync),
-    offset: u64,
-    buf: &mut [u8],
-    sector: u16,
-) -> std::result::Result<(), String> {
+#[cfg(windows)]
+fn open_mft(path: &Path, flags: u32) -> io::Result<File> {
+    use std::os::windows::fs::OpenOptionsExt;
+    use windows_sys::Win32::Storage::FileSystem::FILE_FLAG_OVERLAPPED;
+
+    // Defaults permit FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE.
+    std::fs::OpenOptions::new()
+        .read(true)
+        .custom_flags(flags | FILE_FLAG_OVERLAPPED)
+        .open(path)
+}
+
+#[cfg(windows)]
+fn aligned_range(offset: u64, len: usize, sector: u16) -> Result<(u64, usize, usize)> {
+    if sector == 0 || !sector.is_power_of_two() {
+        return Err("Invalid sector size");
+    }
     let sector = u64::from(sector);
     let start = offset / sector * sector;
     let end = offset
-        .checked_add(buf.len() as u64)
+        .checked_add(len as u64)
         .and_then(|end| end.checked_add(sector - 1))
         .ok_or("Read offset overflow")?
         / sector
         * sector;
-    if start == offset && end - start == buf.len() as u64 {
-        return read_at(offset, buf).map_err(|e| e.to_string());
-    }
-    let mut aligned = vec![0; usize::try_from(end - start).map_err(|_| "Read too large")?];
-    read_at(start, &mut aligned).map_err(|e| e.to_string())?;
-    let skip = (offset - start) as usize;
-    buf.copy_from_slice(&aligned[skip..skip + buf.len()]);
-    Ok(())
+    Ok((
+        start,
+        usize::try_from(end - start).map_err(|_| "Read too large")?,
+        (offset - start) as usize,
+    ))
 }
 
+// Both allocations remain at fixed addresses even if the slot itself moves.
+// Only the calling thread touches slots; Rayon receives completed buffers only.
+#[cfg(windows)]
+struct ReadSlot<'a> {
+    file: &'a File,
+    buffer: Option<AlignedBuffer>,
+    overlapped: Box<OVERLAPPED>,
+    event: OwnedHandle,
+    pending: bool,
+    expected: u32,
+    range: std::ops::Range<usize>,
+}
+
+#[cfg(windows)]
+impl<'a> ReadSlot<'a> {
+    fn new(file: &'a File) -> io::Result<Self> {
+        // SAFETY: null optional pointers; create an unnamed manual-reset event.
+        let event = unsafe { CreateEventW(std::ptr::null(), 1, 0, std::ptr::null()) };
+        if event.is_null() {
+            return Err(io::Error::last_os_error());
+        }
+        // SAFETY: successful CreateEventW returns a unique owned handle.
+        let event = unsafe { OwnedHandle::from_raw_handle(event) };
+        Ok(Self {
+            file,
+            buffer: None,
+            overlapped: Box::default(),
+            event,
+            pending: false,
+            expected: 0,
+            range: 0..0,
+        })
+    }
+
+    fn start(
+        &mut self,
+        offset: u64,
+        len: usize,
+        sector: u16,
+        buffer: AlignedBuffer,
+    ) -> io::Result<()> {
+        assert!(!self.pending && self.buffer.is_none());
+        let (offset, io_len, skip) =
+            aligned_range(offset, len, sector).map_err(io::Error::other)?;
+        if io_len > CHUNK_SIZE || io_len > buffer.len {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "Read exceeds buffer capacity",
+            ));
+        }
+        self.buffer = Some(buffer);
+        self.range = skip..skip + len;
+        // SAFETY: the owned event is valid and its previous I/O has completed.
+        if unsafe { ResetEvent(self.event.as_raw_handle()) } == 0 {
+            return Err(io::Error::last_os_error());
+        }
+        *self.overlapped = OVERLAPPED {
+            Anonymous: OVERLAPPED_0 {
+                Anonymous: OVERLAPPED_0_0 {
+                    Offset: offset as u32,
+                    OffsetHigh: (offset >> 32) as u32,
+                },
+            },
+            hEvent: self.event.as_raw_handle(),
+            ..Default::default()
+        };
+        self.expected = io_len as u32;
+        self.pending = true;
+        let buffer = self.buffer.as_mut().unwrap().as_mut_slice();
+        debug_assert!((buffer.as_ptr() as usize).is_multiple_of(IO_ALIGNMENT));
+        // SAFETY: the aligned buffer and boxed OVERLAPPED are exclusively owned,
+        // stable allocations, kept alive until finish/drain waits for completion.
+        // The borrowed File and owned event also outlive the operation.
+        let result = unsafe {
+            ReadFile(
+                self.file.as_raw_handle(),
+                buffer.as_mut_ptr(),
+                self.expected,
+                std::ptr::null_mut(),
+                &mut *self.overlapped,
+            )
+        };
+        if result == 0 {
+            let error = io::Error::last_os_error();
+            if error.raw_os_error() != Some(ERROR_IO_PENDING as i32) {
+                self.pending = false; // This operation was not submitted.
+                return Err(error);
+            }
+        }
+        Ok(())
+    }
+
+    fn finish(&mut self) -> io::Result<(AlignedBuffer, std::ops::Range<usize>)> {
+        assert!(self.pending);
+        let mut bytes = 0;
+        // SAFETY: these are the live operation's File/OVERLAPPED; TRUE waits for
+        // completion, including I/O that ReadFile completed immediately.
+        if unsafe {
+            GetOverlappedResult(self.file.as_raw_handle(), &*self.overlapped, &mut bytes, 1)
+        } == 0
+        {
+            return Err(io::Error::last_os_error()); // drain/Drop retains the storage.
+        }
+        self.pending = false;
+        if bytes != self.expected {
+            return Err(io::Error::new(
+                io::ErrorKind::UnexpectedEof,
+                "Short overlapped MFT read",
+            ));
+        }
+        Ok((self.buffer.take().unwrap(), self.range.clone()))
+    }
+
+    fn drain(&mut self) {
+        if self.pending {
+            let mut bytes = 0;
+            // SAFETY: all resources are still owned and the File is borrowed.
+            // CancelIoEx may race with completion (ERROR_NOT_FOUND); always wait
+            // afterwards, even when cancellation fails. Terminal errors end I/O.
+            unsafe {
+                CancelIoEx(self.file.as_raw_handle(), &*self.overlapped);
+                GetOverlappedResult(self.file.as_raw_handle(), &*self.overlapped, &mut bytes, 1);
+            }
+            self.pending = false;
+        }
+    }
+}
+
+#[cfg(windows)]
+impl Drop for ReadSlot<'_> {
+    fn drop(&mut self) {
+        self.drain(); // Runs before the buffer, OVERLAPPED, or event is freed.
+    }
+}
+
+// Returning the buffer on unwind also prevents a panicking parse task from
+// permanently removing a buffer and blocking the reader's free-buffer wait.
+#[cfg(windows)]
+struct CompletedRead {
+    buffer: Option<AlignedBuffer>,
+    range: std::ops::Range<usize>,
+    recycle: std::sync::mpsc::Sender<AlignedBuffer>,
+}
+
+#[cfg(windows)]
+impl CompletedRead {
+    fn data_mut(&mut self) -> &mut [u8] {
+        &mut self.buffer.as_mut().unwrap().as_mut_slice()[self.range.clone()]
+    }
+}
+
+#[cfg(windows)]
+impl Drop for CompletedRead {
+    fn drop(&mut self) {
+        if let Some(buffer) = self.buffer.take() {
+            let _ = self.recycle.send(buffer);
+        }
+    }
+}
+
+#[cfg(windows)]
+struct MftReader<'a> {
+    slots: Vec<ReadSlot<'a>>,
+    free_tx: std::sync::mpsc::Sender<AlignedBuffer>,
+    free_rx: std::sync::mpsc::Receiver<AlignedBuffer>,
+}
+
+#[cfg(windows)]
+impl<'a> MftReader<'a> {
+    fn new(file: &'a File) -> io::Result<Self> {
+        let slots = (0..READ_QUEUE_DEPTH)
+            .map(|_| ReadSlot::new(file))
+            .collect::<io::Result<_>>()?;
+        let (free_tx, free_rx) = std::sync::mpsc::channel();
+        // This is the only allocation site for scan buffers: exactly 64 MiB.
+        for _ in 0..READ_BUFFER_COUNT {
+            free_tx.send(AlignedBuffer::new(CHUNK_SIZE)).unwrap();
+        }
+        Ok(Self {
+            slots,
+            free_tx,
+            free_rx,
+        })
+    }
+
+    fn completed(&self, (buffer, range): (AlignedBuffer, std::ops::Range<usize>)) -> CompletedRead {
+        CompletedRead {
+            buffer: Some(buffer),
+            range,
+            recycle: self.free_tx.clone(),
+        }
+    }
+
+    fn read(&mut self, offset: u64, len: usize, sector: u16) -> io::Result<CompletedRead> {
+        // Metadata reads run between parsing scopes; all pool buffers are free.
+        let buffer = self.free_rx.recv().map_err(io::Error::other)?;
+        self.slots[0].start(offset, len, sector, buffer)?;
+        let parts = self.slots[0].finish()?;
+        Ok(self.completed(parts))
+    }
+
+    fn acquire(
+        &self,
+        cancel: &AtomicBool,
+        stopped: &AtomicBool,
+    ) -> std::result::Result<Option<AlignedBuffer>, String> {
+        loop {
+            if cancel.load(Ordering::Relaxed) || stopped.load(Ordering::Relaxed) {
+                return Ok(None);
+            }
+            match self
+                .free_rx
+                .recv_timeout(std::time::Duration::from_millis(10))
+            {
+                Ok(buffer) => return Ok(Some(buffer)),
+                Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
+                    // When called from a Rayon worker (including a one-worker
+                    // pool), execute queued parsing instead of deadlocking it.
+                    if rayon::current_thread_index().is_some() {
+                        rayon::yield_now();
+                    }
+                }
+                Err(e) => return Err(e.to_string()),
+            }
+        }
+    }
+
+    fn drain(&mut self) {
+        for slot in &mut self.slots {
+            slot.drain();
+            if let Some(buffer) = slot.buffer.take() {
+                let _ = self.free_tx.send(buffer);
+            }
+        }
+    }
+}
+
+#[derive(Debug)]
 struct Chunk {
     offset: u64,
     number: u64,
@@ -514,7 +798,7 @@ fn mft_chunks(extents: &[Extent], boot: &BootSector, size: u64) -> Result<Vec<Ch
         let mut consumed = 0;
         let len = len.min(size.saturating_sub(start));
         while consumed < len {
-            let bytes = (len - consumed).min(4 * 1024 * 1024);
+            let bytes = (len - consumed).min(CHUNK_SIZE as u64);
             chunks.push(Chunk {
                 offset: physical + consumed,
                 number: (start + consumed) / record,
@@ -529,8 +813,193 @@ fn mft_chunks(extents: &[Extent], boot: &BootSector, size: u64) -> Result<Vec<Ch
     Ok(chunks)
 }
 
+#[cfg(windows)]
+fn read_mft_start(
+    reader: &mut MftReader<'_>,
+    cancel: &AtomicBool,
+) -> std::result::Result<(BootSector, u64, Vec<Extent>), String> {
+    let mut data = reader
+        .read(0, IO_ALIGNMENT, IO_ALIGNMENT as u16)
+        .map_err(|e| e.to_string())?;
+    let boot = parse_boot_sector(data.data_mut())?;
+    drop(data);
+    if cancel.load(Ordering::Relaxed) {
+        return Err("Scan cancelled".into());
+    }
+    let offset = boot
+        .mft_lcn
+        .checked_mul(u64::from(boot.cluster_size))
+        .ok_or("MFT offset overflow")?;
+    let mut data = reader
+        .read(offset, boot.record_size as usize, boot.bytes_per_sector)
+        .map_err(|e| e.to_string())?;
+    let mut zero = parse_record(data.data_mut(), 0)?.ok_or("Unused MFT record 0")?;
+    if zero.base.is_some() || zero.directory {
+        return Err("Invalid MFT record 0".into());
+    }
+    let size = zero.size.ok_or("Missing MFT data size")?;
+    let record_size = u64::from(boot.record_size);
+    if !size.is_multiple_of(record_size) || size / record_size <= 5 {
+        return Err("Invalid MFT data size".into());
+    }
+    let mut extents = std::mem::take(&mut zero.extents);
+    extents.sort_unstable_by_key(|extent| extent.vcn);
+    let first = extents.first().ok_or("Missing MFT extents")?;
+    if first.vcn != 0 || first.lcn != Some(boot.mft_lcn) {
+        return Err("Invalid first MFT extent".into());
+    }
+    Ok((boot, size, extents))
+}
+
+#[cfg(windows)]
+struct ParseContext<'a, F> {
+    boot: &'a BootSector,
+    root_path: &'a Path,
+    cancel: &'a AtomicBool,
+    counters: &'a Counters,
+    report: &'a F,
+}
+
+#[cfg(windows)]
+impl<F: Fn(Progress) + Sync> ParseContext<'_, F> {
+    fn parse(&self, chunk: &Chunk, buf: &mut [u8]) -> std::result::Result<Vec<Record>, String> {
+        let mut records = Vec::new();
+        let mut counts = Progress::default();
+        for (index, buf) in buf
+            .chunks_exact_mut(self.boot.record_size as usize)
+            .enumerate()
+        {
+            if self.cancel.load(Ordering::Relaxed) {
+                return Ok(Vec::new());
+            }
+            let number = chunk.number + index as u64;
+            let record = if buf.iter().all(|byte| *byte == 0) {
+                Ok(None)
+            } else {
+                parse_record(buf, number)
+            };
+            match record {
+                Ok(Some(record)) => {
+                    if number == 0 && (record.base.is_some() || record.directory)
+                        || number == 5
+                            && (record.base.is_some() || !record.directory || record.excluded)
+                    {
+                        return Err("Invalid required MFT record".into());
+                    }
+                    if record.directory {
+                        counts.folders += 1;
+                    } else {
+                        counts.files += 1;
+                        counts.bytes += record.size.unwrap_or(0);
+                    }
+                    records.push(record);
+                }
+                _ if number == 0 || number == 5 => {
+                    return Err("Unreadable MFT record 0 or 5".into());
+                }
+                Ok(None) => {}
+                Err(_) => counts.errors += 1,
+            }
+            if index % 1024 == 1023 {
+                self.counters
+                    .flush(&mut counts, self.root_path, self.report);
+            }
+        }
+        self.counters
+            .flush(&mut counts, self.root_path, self.report);
+        Ok(records)
+    }
+}
+
+#[cfg(windows)]
+fn read_chunks(
+    reader: &mut MftReader<'_>,
+    chunks: &[Chunk],
+    context: &ParseContext<'_, impl Fn(Progress) + Sync>,
+) -> std::result::Result<Vec<Record>, String> {
+    let results = std::sync::Mutex::new((0..chunks.len()).map(|_| None).collect::<Vec<_>>());
+    let stopped = AtomicBool::new(false);
+    // Unlike scope(), the body stays on the caller: no pending I/O state or
+    // OVERLAPPED pointers cross threads. Spawned tasks own completed buffers.
+    let io_result = rayon::in_place_scope(|scope| {
+        let io_result = (|| {
+            let mut pending = std::collections::VecDeque::new();
+            let mut free_slots: Vec<_> = (0..READ_QUEUE_DEPTH).collect();
+            let mut next = 0;
+            while next < chunks.len() || !pending.is_empty() {
+                if context.cancel.load(Ordering::Relaxed) || stopped.load(Ordering::Relaxed) {
+                    break;
+                }
+                while next < chunks.len() && pending.len() < READ_QUEUE_DEPTH {
+                    let Some(buffer) = reader.acquire(context.cancel, &stopped)? else {
+                        break;
+                    };
+                    if context.cancel.load(Ordering::Relaxed) || stopped.load(Ordering::Relaxed) {
+                        let _ = reader.free_tx.send(buffer);
+                        break;
+                    }
+                    let slot = free_slots.pop().unwrap();
+                    let chunk = &chunks[next];
+                    reader.slots[slot]
+                        .start(
+                            chunk.offset,
+                            chunk.len,
+                            context.boot.bytes_per_sector,
+                            buffer,
+                        )
+                        .map_err(|e| e.to_string())?;
+                    pending.push_back((slot, next));
+                    next += 1;
+                }
+                if context.cancel.load(Ordering::Relaxed) || stopped.load(Ordering::Relaxed) {
+                    break;
+                }
+                let Some((slot, index)) = pending.pop_front() else {
+                    break;
+                };
+                let parts = reader.slots[slot].finish().map_err(|e| e.to_string())?;
+                let mut completed = reader.completed(parts);
+                free_slots.push(slot);
+                let results = &results;
+                let stopped = &stopped;
+                scope.spawn(move |_| {
+                    let result = context.parse(&chunks[index], completed.data_mut());
+                    let failed = result.is_err();
+                    results.lock().unwrap()[index] = Some(result);
+                    if failed {
+                        stopped.store(true, Ordering::Relaxed);
+                    }
+                    // CompletedRead's Drop returns the buffer, including on panic.
+                });
+            }
+            Ok::<_, String>(())
+        })();
+        // Drain before leaving the scope, on success, cancellation or any error.
+        // in_place_scope then joins every parse task before the reader can drop.
+        reader.drain();
+        io_result
+    });
+    if context.cancel.load(Ordering::Relaxed) {
+        return Ok(Vec::new());
+    }
+    io_result?;
+    let results = results.into_inner().unwrap();
+    if let Some(error) = results.iter().find_map(|result| match result {
+        Some(Err(error)) => Some(error.clone()),
+        _ => None,
+    }) {
+        return Err(error);
+    }
+    let mut records = Vec::new();
+    for result in results {
+        records.extend(result.ok_or("MFT parsing stopped")??);
+    }
+    Ok(records)
+}
+
+#[cfg(windows)]
 fn read_mft(
-    read_at: impl Fn(u64, &mut [u8]) -> io::Result<()> + Sync,
+    file: &File,
     root_path: &Path,
     cancel: &AtomicBool,
     report: &(impl Fn(Progress) + Sync),
@@ -539,97 +1008,31 @@ fn read_mft(
         if cancel.load(Ordering::Relaxed) {
             return Ok(None);
         }
-        let mut buf = vec![0; 4096];
-        read_at(0, &mut buf).map_err(|e| e.to_string())?;
-        let boot = parse_boot_sector(&buf)?;
-        let record_size = u64::from(boot.record_size);
-        let offset = boot
-            .mft_lcn
-            .checked_mul(u64::from(boot.cluster_size))
-            .ok_or("MFT offset overflow")?;
-        buf.resize(boot.record_size as usize, 0);
-        read_aligned(&read_at, offset, &mut buf, boot.bytes_per_sector)?;
-        let mut zero = parse_record(&mut buf, 0)?.ok_or("Unused MFT record 0")?;
-        if zero.base.is_some() || zero.directory {
-            return Err("Invalid MFT record 0".into());
-        }
-        let size = zero.size.ok_or("Missing MFT data size")?;
-        if !size.is_multiple_of(record_size) || size / record_size <= 5 {
-            return Err("Invalid MFT data size".into());
-        }
-        let mut extents = std::mem::take(&mut zero.extents);
-        extents.sort_unstable_by_key(|extent| extent.vcn);
-        let first = extents.first().ok_or("Missing MFT extents")?;
-        if first.vcn != 0 || first.lcn != Some(boot.mft_lcn) {
-            return Err("Invalid first MFT extent".into());
-        }
+        let mut reader = MftReader::new(file).map_err(|e| e.to_string())?;
+        let (boot, size, mut extents) = read_mft_start(&mut reader, cancel)?;
         let counters = Counters::new();
-        let parse_chunk = |chunk: &Chunk| -> std::result::Result<Vec<Record>, String> {
-            if cancel.load(Ordering::Relaxed) {
-                return Ok(Vec::new());
-            }
-            let mut buf = vec![0; chunk.len];
-            read_aligned(&read_at, chunk.offset, &mut buf, boot.bytes_per_sector)?;
-            let mut records = Vec::new();
-            let mut counts = Progress::default();
-            for (index, buf) in buf.chunks_exact_mut(boot.record_size as usize).enumerate() {
-                if cancel.load(Ordering::Relaxed) {
-                    return Ok(Vec::new());
-                }
-                let number = chunk.number + index as u64;
-                let record = if buf.iter().all(|byte| *byte == 0) {
-                    Ok(None)
-                } else {
-                    parse_record(buf, number)
-                };
-                match record {
-                    Ok(Some(record)) => {
-                        if number == 0 && (record.base.is_some() || record.directory)
-                            || number == 5
-                                && (record.base.is_some() || !record.directory || record.excluded)
-                        {
-                            return Err("Invalid required MFT record".into());
-                        }
-                        if record.directory {
-                            counts.folders += 1;
-                        } else {
-                            counts.files += 1;
-                            counts.bytes += record.size.unwrap_or(0);
-                        }
-                        records.push(record);
-                    }
-                    _ if number == 0 || number == 5 => {
-                        return Err("Unreadable MFT record 0 or 5".into());
-                    }
-                    Ok(None) => {}
-                    Err(_) => counts.errors += 1,
-                }
-                if index % 1024 == 1023 {
-                    counters.flush(&mut counts, root_path, report);
-                }
-            }
-            counters.flush(&mut counts, root_path, report);
-            Ok(records)
+        let context = ParseContext {
+            boot: &boot,
+            root_path,
+            cancel,
+            counters: &counters,
+            report,
         };
         let mut records = Vec::new();
         let mut first_records = 0;
         if mft_chunks(&extents, &boot, size).is_err() {
-            // Attribute-list continuations must be discoverable in the first known run.
+            let first = extents.first().ok_or("Missing MFT extents")?;
             let first_size = first
                 .clusters
                 .checked_mul(u64::from(boot.cluster_size))
                 .ok_or("MFT extent size overflow")?
                 .min(size);
             let chunks = mft_chunks(std::slice::from_ref(first), &boot, first_size)?;
-            let parsed = chunks
-                .par_iter()
-                .map(&parse_chunk)
-                .collect::<std::result::Result<Vec<_>, _>>()?;
-            records.extend(parsed.into_iter().flatten());
+            records = read_chunks(&mut reader, &chunks, &context)?;
             if cancel.load(Ordering::Relaxed) {
                 return Ok(None);
             }
-            first_records = first_size / record_size;
+            first_records = first_size / u64::from(boot.record_size);
             for record in &mut records {
                 if record.base == Some(0) {
                     extents.append(&mut record.extents);
@@ -637,21 +1040,16 @@ fn read_mft(
             }
             extents.sort_unstable_by_key(|extent| extent.vcn);
         }
-        let chunks = mft_chunks(&extents, &boot, size)?;
-        let parsed = chunks
-            .par_iter()
+        let chunks: Vec<_> = mft_chunks(&extents, &boot, size)?
+            .into_iter()
             .filter(|chunk| chunk.number >= first_records)
-            .map(parse_chunk)
-            .collect::<std::result::Result<Vec<_>, _>>()?;
+            .collect();
+        records.extend(read_chunks(&mut reader, &chunks, &context)?);
         if cancel.load(Ordering::Relaxed) {
             return Ok(None);
         }
-        let mut tree = build_tree(
-            records.into_iter().chain(parsed.into_iter().flatten()),
-            root_path.to_owned(),
-            cancel,
-        )
-        .ok_or("Cannot build MFT tree")?;
+        let mut tree =
+            build_tree(records, root_path.to_owned(), cancel).ok_or("Cannot build MFT tree")?;
         tree.errors = counters.snapshot(root_path).errors;
         let root = &tree.nodes[0];
         report(Progress {
@@ -842,23 +1240,185 @@ mod tests {
         image
     }
 
-    fn image_reader(image: &[u8]) -> impl Fn(u64, &mut [u8]) -> io::Result<()> + Sync + '_ {
-        move |offset, buf| {
-            let offset = offset as usize;
-            let source = image
-                .get(offset..offset + buf.len())
-                .ok_or(io::ErrorKind::UnexpectedEof)?;
-            buf.copy_from_slice(source);
-            Ok(())
+    #[cfg(windows)]
+    fn image_file(image: &[u8]) -> (tempfile::TempDir, File) {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("mft.bin");
+        std::fs::write(&path, image).unwrap();
+        let file = open_mft(&path, 0).unwrap();
+        (dir, file)
+    }
+
+    #[cfg(windows)]
+    fn scan_image(
+        image: &[u8],
+        root_path: &Path,
+        cancel: &AtomicBool,
+        report: &(impl Fn(Progress) + Sync),
+    ) -> std::result::Result<Option<Tree>, String> {
+        let (_dir, file) = image_file(image);
+        read_mft(&file, root_path, cancel, report)
+    }
+
+    #[cfg(windows)]
+    fn assert_buffers_returned(reader: &MftReader<'_>) {
+        assert!(
+            reader
+                .slots
+                .iter()
+                .all(|slot| !slot.pending && slot.buffer.is_none())
+        );
+        let buffers: Vec<_> = reader.free_rx.try_iter().collect();
+        assert_eq!(buffers.len(), READ_BUFFER_COUNT);
+        for mut buffer in buffers {
+            assert_eq!(buffer.len, CHUNK_SIZE);
+            assert!((buffer.as_mut_slice().as_ptr() as usize).is_multiple_of(IO_ALIGNMENT));
+            reader.free_tx.send(buffer).unwrap();
         }
     }
 
+    #[cfg(windows)]
+    #[test]
+    fn overlapped_queue_drains_on_errors_and_recycles_buffers() {
+        let (_dir, file) = image_file(&[7; 40 * IO_ALIGNMENT]);
+        let mut reader = MftReader::new(&file).unwrap();
+        let mut data = reader.read(0, IO_ALIGNMENT, 512).unwrap();
+        assert!(data.data_mut().iter().all(|byte| *byte == 7));
+        drop(data);
+        let buffer = reader.free_rx.recv().unwrap();
+        reader.slots[0].start(0, IO_ALIGNMENT, 512, buffer).unwrap();
+        reader.drain(); // Also exercises cancellation without finish().
+        assert_buffers_returned(&reader);
+
+        let boot = BootSector {
+            bytes_per_sector: 512,
+            cluster_size: 4096,
+            mft_lcn: 2,
+            record_size: 1024,
+        };
+        let cancel = AtomicBool::new(false);
+        let counters = Counters::new();
+        let report = |_| {};
+        let context = ParseContext {
+            boot: &boot,
+            root_path: Path::new(r"C:\"),
+            cancel: &cancel,
+            counters: &counters,
+            report: &report,
+        };
+        let chunks: Vec<_> = (0..40)
+            .map(|index| Chunk {
+                offset: (index * IO_ALIGNMENT) as u64,
+                number: 24 + index as u64 * 4,
+                len: IO_ALIGNMENT,
+            })
+            .collect();
+        assert!(
+            read_chunks(&mut reader, &chunks, &context)
+                .unwrap()
+                .is_empty()
+        );
+        assert_eq!(counters.snapshot(context.root_path).errors, 160);
+        assert_buffers_returned(&reader);
+
+        let bad = [
+            Chunk {
+                offset: 0,
+                number: 24,
+                len: IO_ALIGNMENT,
+            },
+            Chunk {
+                offset: 40 * IO_ALIGNMENT as u64,
+                number: 28,
+                len: IO_ALIGNMENT,
+            },
+        ];
+        assert!(read_chunks(&mut reader, &bad, &context).is_err());
+        assert_buffers_returned(&reader);
+        let short = [Chunk {
+            offset: 0,
+            number: 24,
+            len: 41 * IO_ALIGNMENT,
+        }];
+        assert!(read_chunks(&mut reader, &short, &context).is_err());
+        assert_buffers_returned(&reader);
+
+        let mut fatal = chunks;
+        fatal[0].number = 0;
+        let error = read_chunks(&mut reader, &fatal, &context).unwrap_err();
+        assert_eq!(error, "Unreadable MFT record 0 or 5");
+        assert_buffers_returned(&reader);
+        let mut data = reader.read(0, IO_ALIGNMENT, 512).unwrap();
+        assert!(data.data_mut().iter().all(|byte| *byte == 7));
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn bounded_pipeline_preserves_order_with_one_or_four_workers() {
+        let mut source = Vec::new();
+        for index in 0..40 {
+            source.extend(record_buf(
+                1,
+                0,
+                &[filename(5, &format!("file{index}.txt"), 1)],
+            ));
+        }
+        let (_dir, file) = image_file(&source);
+        let chunks: Vec<_> = (0..40)
+            .map(|index| Chunk {
+                offset: index * 1024,
+                number: index + 24,
+                len: 1024,
+            })
+            .collect();
+        let boot = BootSector {
+            bytes_per_sector: 512,
+            cluster_size: 4096,
+            mft_lcn: 2,
+            record_size: 1024,
+        };
+        for workers in [1, 4] {
+            let pool = rayon::ThreadPoolBuilder::new()
+                .num_threads(workers)
+                .build()
+                .unwrap();
+            let cancel = AtomicBool::new(false);
+            let counters = Counters::new();
+            let report = |_| {};
+            let context = ParseContext {
+                boot: &boot,
+                root_path: Path::new(r"C:\"),
+                cancel: &cancel,
+                counters: &counters,
+                report: &report,
+            };
+            let records = pool.install(|| {
+                let mut reader = MftReader::new(&file).unwrap();
+                let records = read_chunks(&mut reader, &chunks, &context).unwrap();
+                assert_buffers_returned(&reader);
+                records
+            });
+            assert_eq!(
+                records.iter().map(|r| r.number).collect::<Vec<_>>(),
+                (24..64).collect::<Vec<_>>()
+            );
+            for (index, record) in records.iter().enumerate() {
+                assert_eq!(record.names[0].name, format!("file{index}.txt"));
+                assert_eq!(
+                    record.names[0].category,
+                    scanner::category(&record.names[0].name)
+                );
+            }
+        }
+    }
+
+    #[cfg(windows)]
     #[test]
     fn in_memory_scan_and_attribute_list_fragmentation() {
         for fragmented in [false, true] {
             let reports = std::sync::Mutex::new(Vec::new());
-            let tree = read_mft(
-                image_reader(&image(fragmented)),
+            let tree = scan_image(
+                &image(fragmented),
                 Path::new(r"C:\"),
                 &AtomicBool::new(false),
                 &|progress| reports.lock().unwrap().push(progress),
@@ -906,6 +1466,52 @@ mod tests {
         }
     }
 
+    #[cfg(windows)]
+    #[test]
+    fn full_scan_pipelines_more_than_eight_mft_chunks() {
+        let size = 10 * CHUNK_SIZE;
+        let mut image = image(false);
+        image.resize(8192 + size, 0);
+        let sectors = image.len() / 512;
+        put64(&mut image, 40, sectors as u64);
+        image[8192..9216].copy_from_slice(&record_buf(
+            1,
+            0,
+            &[nonresident(size as u64, 0, 10239, &[0x12, 0, 40, 2, 0])],
+        ));
+        for index in 1..10 {
+            let offset = 8192 + index * CHUNK_SIZE;
+            image[offset..offset + 1024].copy_from_slice(&record_buf(
+                1,
+                0,
+                &[
+                    filename(5, &format!("extra{index}.MP4"), 1),
+                    resident(0x80, &vec![0; index], ""),
+                ],
+            ));
+        }
+        let tree = scan_image(&image, Path::new(r"C:\"), &AtomicBool::new(false), &|_| {})
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            (
+                tree.nodes[0].files,
+                tree.nodes[0].folders,
+                tree.nodes[0].size,
+                tree.errors
+            ),
+            (12, 2, 66, 1)
+        );
+        assert_eq!(
+            tree.nodes
+                .iter()
+                .filter(|node| node.name.starts_with("extra"))
+                .count(),
+            9
+        );
+    }
+
+    #[cfg(windows)]
     #[test]
     fn fragmentation_in_record_zero_run_list() {
         let mut image = image(true);
@@ -915,17 +1521,13 @@ mod tests {
             &[nonresident(40 * 1024, 0, 9, &[0x11, 4, 2, 0x11, 6, 8, 0])],
         );
         image[8192..9216].copy_from_slice(&zero);
-        let tree = read_mft(
-            image_reader(&image),
-            Path::new(r"C:\"),
-            &AtomicBool::new(false),
-            &|_| {},
-        )
-        .unwrap()
-        .unwrap();
+        let tree = scan_image(&image, Path::new(r"C:\"), &AtomicBool::new(false), &|_| {})
+            .unwrap()
+            .unwrap();
         assert_eq!((tree.nodes[0].size, tree.errors), (21, 1));
     }
 
+    #[cfg(windows)]
     #[test]
     fn invalid_mft_layouts_are_errors() {
         for data in [
@@ -936,13 +1538,7 @@ mod tests {
             let mut image = image(false);
             image[8192..9216].copy_from_slice(&record_buf(1, 0, &[data]));
             assert!(
-                read_mft(
-                    image_reader(&image),
-                    Path::new(r"C:\"),
-                    &AtomicBool::new(false),
-                    &|_| {}
-                )
-                .is_err()
+                scan_image(&image, Path::new(r"C:\"), &AtomicBool::new(false), &|_| {}).is_err()
             );
         }
         for (vcn, last_vcn) in [(5, 10), (3, 8)] {
@@ -953,17 +1549,12 @@ mod tests {
                 &[nonresident(0, vcn, last_vcn, &[0x11, 6, 10, 0])],
             ));
             assert!(
-                read_mft(
-                    image_reader(&image),
-                    Path::new(r"C:\"),
-                    &AtomicBool::new(false),
-                    &|_| {}
-                )
-                .is_err()
+                scan_image(&image, Path::new(r"C:\"), &AtomicBool::new(false), &|_| {}).is_err()
             );
         }
     }
 
+    #[cfg(windows)]
     #[test]
     fn required_records_and_read_failures_are_fatal() {
         for number in [0, 5] {
@@ -977,66 +1568,59 @@ mod tests {
                 let offset = 8192 + number * 1024;
                 image[offset..offset + 1024].copy_from_slice(&record);
                 assert!(
-                    read_mft(
-                        image_reader(&image),
-                        Path::new(r"C:\"),
-                        &AtomicBool::new(false),
-                        &|_| {}
-                    )
-                    .is_err()
+                    scan_image(&image, Path::new(r"C:\"), &AtomicBool::new(false), &|_| {})
+                        .is_err()
                 );
             }
         }
         let mut image = image(false);
         image[3] = 0;
-        assert!(
-            read_mft(
-                image_reader(&image),
-                Path::new(r"C:\"),
-                &AtomicBool::new(false),
-                &|_| {}
-            )
-            .is_err()
-        );
-        assert!(
-            read_mft(
-                |_, _| Err(io::ErrorKind::PermissionDenied.into()),
-                Path::new(r"C:\"),
-                &AtomicBool::new(false),
-                &|_| {}
-            )
-            .is_err()
-        );
-        assert!(
-            read_mft(
-                image_reader(&image[..9000]),
-                Path::new(r"C:\"),
-                &AtomicBool::new(false),
-                &|_| {}
-            )
-            .is_err()
-        );
+        assert!(scan_image(&image, Path::new(r"C:\"), &AtomicBool::new(false), &|_| {}).is_err());
+        assert!(scan_image(&[], Path::new(r"C:\"), &AtomicBool::new(false), &|_| {}).is_err());
+        let valid_image = self::image(false);
+        let error = scan_image(
+            &valid_image[..9000],
+            Path::new(r"C:\"),
+            &AtomicBool::new(false),
+            &|_| {},
+        )
+        .err()
+        .unwrap();
+        assert!(error.contains("Short overlapped MFT read"));
     }
 
+    #[cfg(windows)]
     #[test]
     fn reads_are_aligned_on_4kn_volumes() {
         let mut image = image(false);
         put16(&mut image, 11, 4096);
         image[13] = 1;
-        let reader = image_reader(&image);
-        let tree = read_mft(
-            |offset, buf| {
-                assert!(offset.is_multiple_of(4096));
-                assert!(buf.len().is_multiple_of(4096));
-                reader(offset, buf)
-            },
-            Path::new(r"C:\"),
-            &AtomicBool::new(false),
-            &|_| {},
-        )
-        .unwrap()
-        .unwrap();
+        let tree = scan_image(&image, Path::new(r"C:\"), &AtomicBool::new(false), &|_| {})
+            .unwrap()
+            .unwrap();
         assert_eq!(tree.nodes[0].size, 21);
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn aligned_reads_cover_small_records_and_unaligned_ranges() {
+        let source: Vec<_> = (0..8192).map(|i| (i % 251) as u8).collect();
+        let (_dir, file) = image_file(&source);
+        let mut reader = MftReader::new(&file).unwrap();
+        for (sector, offset) in [(512, 512), (512, 513), (4096, 513)] {
+            let (start, len, skip) = aligned_range(offset, 1024, sector).unwrap();
+            assert!(start.is_multiple_of(u64::from(sector)));
+            assert!(len.is_multiple_of(usize::from(sector)));
+            assert_eq!(skip as u64, offset - start);
+            let mut data = reader.read(offset, 1024, sector).unwrap();
+            assert_eq!(
+                data.data_mut(),
+                &source[offset as usize..offset as usize + 1024]
+            );
+        }
+        assert!(aligned_range(u64::MAX, 1, 4096).is_err());
+        assert!(aligned_range(0, 1, 0).is_err());
+        assert_buffers_returned(&reader);
     }
 
     #[test]
@@ -1070,54 +1654,32 @@ mod tests {
         );
     }
 
+    #[cfg(windows)]
     #[test]
     fn cancellation_wins_over_read_errors_and_during_parsing() {
         let cancel = AtomicBool::new(true);
+        // A truncated file would fail the initial read if cancellation were ignored.
+        let (_dir, file) = image_file(&[]);
         assert!(
-            read_mft(
-                |_, _| panic!("Cancelled before reading"),
-                Path::new(r"C:\"),
-                &cancel,
-                &|_| {}
-            )
-            .unwrap()
-            .is_none()
+            read_mft(&file, Path::new(r"C:\"), &cancel, &|_| {})
+                .unwrap()
+                .is_none()
         );
         cancel.store(false, Ordering::Relaxed);
-        assert!(
-            read_mft(
-                |_, _| {
-                    cancel.store(true, Ordering::Relaxed);
-                    Err(io::ErrorKind::PermissionDenied.into())
-                },
-                Path::new(r"C:\"),
-                &cancel,
-                &|_| {}
-            )
-            .unwrap()
-            .is_none()
-        );
-        cancel.store(false, Ordering::Relaxed);
+        assert!(read_mft(&file, Path::new(r"C:\"), &cancel, &|_| {}).is_err());
+
+        // Cancellation from a report also wins over an otherwise successful scan.
         let image = image(false);
-        let reader = image_reader(&image);
         assert!(
-            read_mft(
-                |offset, buf| {
-                    reader(offset, buf)?;
-                    if buf.len() > 4096 {
-                        cancel.store(true, Ordering::Relaxed);
-                    }
-                    Ok(())
-                },
-                Path::new(r"C:\"),
-                &cancel,
-                &|_| {}
-            )
+            scan_image(&image, Path::new(r"C:\"), &cancel, &|_| {
+                cancel.store(true, Ordering::Relaxed);
+            })
             .unwrap()
             .is_none()
         );
     }
 
+    #[cfg(windows)]
     #[test]
     fn reading_progress_can_cancel_before_tree_assembly() {
         let size = 2048 * 1024;
@@ -1130,35 +1692,42 @@ mod tests {
             0,
             &[nonresident(size as u64, 0, 511, &[0x12, 0, 2, 2, 0])],
         ));
+        let (_dir, file) = image_file(&image);
         let cancel = AtomicBool::new(false);
-        let reader = image_reader(&image);
-        let tree = read_mft(
-            |offset, buf| {
-                reader(offset, buf)?;
-                if buf.len() > 4096 {
-                    std::thread::sleep(std::time::Duration::from_millis(110));
-                }
-                Ok(())
-            },
-            Path::new(r"C:\"),
-            &cancel,
-            &|progress| {
-                assert_eq!(
-                    (
-                        progress.files,
-                        progress.folders,
-                        progress.bytes,
-                        progress.errors
-                    ),
-                    (5, 3, size as u64 + 21, 1)
-                );
-                assert_eq!(progress.current_path, r"C:\");
-                cancel.store(true, Ordering::Relaxed);
-            },
-        )
-        .unwrap();
+        let mut reader = MftReader::new(&file).unwrap();
+        let (boot, size, extents) = read_mft_start(&mut reader, &cancel).unwrap();
+        let chunks = mft_chunks(&extents, &boot, size).unwrap();
+        let counters = Counters::new();
+        let report = |progress: Progress| {
+            assert_eq!(
+                (
+                    progress.files,
+                    progress.folders,
+                    progress.bytes,
+                    progress.errors
+                ),
+                (5, 3, size + 21, 1)
+            );
+            assert_eq!(progress.current_path, r"C:\");
+            cancel.store(true, Ordering::Relaxed);
+        };
+        let context = ParseContext {
+            boot: &boot,
+            root_path: Path::new(r"C:\"),
+            cancel: &cancel,
+            counters: &counters,
+            report: &report,
+        };
+        // Age the production progress throttle without introducing an I/O hook.
+        std::thread::sleep(std::time::Duration::from_millis(110));
+        assert!(
+            read_chunks(&mut reader, &chunks, &context)
+                .unwrap()
+                .is_empty()
+        );
         assert!(cancel.load(Ordering::Relaxed));
-        assert!(tree.is_none());
+        assert!(reader.slots.iter().all(|slot| !slot.pending));
+        assert_buffers_returned(&reader);
     }
 
     #[cfg(windows)]
@@ -1339,7 +1908,7 @@ mod tests {
             0,
             &[
                 filename(24, "b.txt", 1),
-                filename(25, "a.txt", 1),
+                filename(25, "a.MP4", 1),
                 resident(0x80, &[0; 10], ""),
             ],
         );
