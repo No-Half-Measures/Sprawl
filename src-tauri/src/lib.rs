@@ -1,4 +1,5 @@
 mod cache;
+mod mft;
 mod scanner;
 
 use cache::SavedScan;

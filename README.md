@@ -26,12 +26,18 @@ The manual smoke test scans `C:\Windows\System32`; set `DISKMAPPER_SMOKE_PATH`
 to use another existing directory. Tests create temporary fixtures. The link test
 tries a symlink, then a Windows junction, and reports a skip if neither is allowed.
 
+`cargo test --release mft_matches_directory_scan -- --ignored --nocapture`, run
+from an elevated terminal, scans `C:\` (or `DISKMAPPER_MFT_DRIVE`) through both
+the MFT and the directory walk and prints timings and differences.
+
 ## Implementation notes
 
-- Rust scans directory batches with Rayon on a background thread. An atomic flag
-  cancels scans; a worker mutex serializes replacements. Completed trees are
-  immutable arena snapshots. Files store their own names, with parent indices
-  used to reconstruct paths. Folder counts exclude the folder itself.
+- Rust scans on a background thread with one Rayon task per directory. When the
+  app runs as administrator, whole NTFS drive scans read the master file table
+  directly instead, falling back to the directory walk on any failure. An
+  atomic flag cancels scans; a worker mutex serializes replacements. Completed
+  trees are immutable arena snapshots. Files store their own names, with parent
+  indices used to reconstruct paths. Folder counts exclude the folder itself.
 - All filesystem errors below the selected root are counted and skipped.
   Symlinks and junctions are excluded; cloud placeholders and dedup reparse
   points remain included. Sizes are logical lengths;

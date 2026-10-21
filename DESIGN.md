@@ -20,6 +20,7 @@ DiskMapper shows where disk space goes. You pick a drive or folder, it scans, an
 
 ### Scanner
 - Walks the tree in parallel and does not follow symlinks or junctions (reparse points), so there are no loops and nothing is counted twice.
+- When the app runs as administrator, scanning a whole NTFS drive reads the master file table directly, which is several times faster. Folder scans, other filesystems, and any MFT read failure use the directory walk.
 - Files that can't be read (access denied and similar) are skipped and counted in `errors`. They never cause the scan to fail.
 - Each node stores its logical size (`len`), file count, and folder count. Folder totals are rolled up after the walk.
 - Progress goes out as a `scan-progress` event about every 100 ms: `{ files, folders, bytes, errors, currentPath }`. When the scan ends, a `scan-complete` event carries the root summary, or `scan-cancelled` if it was stopped.
@@ -94,4 +95,4 @@ A calm, clean, dark-first look that also respects the system light theme. There 
 - Frontend: Vitest covers size formatting, category mapping, and treemap layout (areas proportional, nothing overlapping, small items culled).
 
 ## Out of scope (v1)
-- Deleting or moving files, NTFS MFT fast-scan, duplicate detection, exporting scans.
+- Deleting or moving files, duplicate detection, exporting scans.

@@ -87,7 +87,7 @@ pub struct Progress {
     pub current_path: String,
 }
 
-struct Counters {
+pub(crate) struct Counters {
     files: AtomicU64,
     folders: AtomicU64,
     bytes: AtomicU64,
@@ -96,7 +96,16 @@ struct Counters {
 }
 
 impl Counters {
-    fn flush(&self, counts: &mut Progress, path: &Path, report: &impl Fn(Progress)) {
+    pub(crate) fn new() -> Self {
+        Self {
+            files: AtomicU64::new(0),
+            folders: AtomicU64::new(0),
+            bytes: AtomicU64::new(0),
+            errors: AtomicU64::new(0),
+            last: Mutex::new(Instant::now()),
+        }
+    }
+    pub(crate) fn flush(&self, counts: &mut Progress, path: &Path, report: &impl Fn(Progress)) {
         for (counter, count) in [
             (&self.files, counts.files),
             (&self.folders, counts.folders),
@@ -110,7 +119,7 @@ impl Counters {
         *counts = Progress::default();
         self.report(path, report);
     }
-    fn snapshot(&self, path: &Path) -> Progress {
+    pub(crate) fn snapshot(&self, path: &Path) -> Progress {
         Progress {
             files: self.files.load(Ordering::Relaxed),
             folders: self.folders.load(Ordering::Relaxed),
@@ -277,19 +286,58 @@ pub fn scan(
         return Err("Choose a regular folder or drive, not a link or junction.".into());
     }
     let root_path = strip_verbatim_prefix(&fs::canonicalize(path).map_err(|e| e.to_string())?);
-    let counters = Counters {
-        files: AtomicU64::new(0),
-        folders: AtomicU64::new(0),
-        bytes: AtomicU64::new(0),
-        errors: AtomicU64::new(0),
-        last: Mutex::new(Instant::now()),
-    };
+    #[cfg(windows)]
+    if drive_letter(&root_path).is_some() {
+        let result = crate::mft::scan_volume(&root_path, cancel, &report);
+        if cancel.load(Ordering::Relaxed) {
+            return Ok(None);
+        }
+        match result {
+            Ok(Some(mut tree)) => {
+                tree.nodes[0].name = root_name(path);
+                return Ok(Some(tree));
+            }
+            Ok(None) => return Ok(None),
+            Err(_) => {}
+        }
+    }
+    if cancel.load(Ordering::Relaxed) {
+        return Ok(None);
+    }
+    Ok(scan_walk(path, root_path, cancel, report))
+}
+
+#[cfg(windows)]
+pub(crate) fn drive_letter(path: &Path) -> Option<u8> {
+    use std::path::{Component, Prefix};
+
+    let mut components = path.components();
+    match (components.next(), components.next(), components.next()) {
+        (Some(Component::Prefix(prefix)), Some(Component::RootDir), None) => match prefix.kind() {
+            Prefix::Disk(letter) => Some(letter),
+            _ => None,
+        },
+        _ => None,
+    }
+}
+
+fn root_name(path: &Path) -> String {
+    path.file_name().map_or_else(
+        || path.display().to_string(),
+        |s| s.to_string_lossy().into_owned(),
+    )
+}
+
+fn scan_walk(
+    path: &Path,
+    root_path: PathBuf,
+    cancel: &AtomicBool,
+    report: impl Fn(Progress) + Sync,
+) -> Option<Tree> {
+    let counters = Counters::new();
     let mut tree = Tree {
         nodes: vec![Node {
-            name: path.file_name().map_or_else(
-                || path.display().to_string(),
-                |s| s.to_string_lossy().into_owned(),
-            ),
+            name: root_name(path),
             parent: None,
             children: vec![],
             kind: Kind::Dir,
@@ -307,12 +355,21 @@ pub fn scan(
     });
     tree.nodes = nodes.into_inner().unwrap();
     if cancel.load(Ordering::Relaxed) {
-        return Ok(None);
+        return None;
     }
+    if !finish(&mut tree, cancel) {
+        return None;
+    }
+    tree.errors = counters.errors.load(Ordering::Relaxed);
+    report(counters.snapshot(path));
+    Some(tree)
+}
+
+pub(crate) fn finish(tree: &mut Tree, cancel: &AtomicBool) -> bool {
     let mut category_bytes = vec![[0_u64; CATEGORY_COUNT]; tree.nodes.len()];
     for id in (0..tree.nodes.len()).rev() {
         if cancel.load(Ordering::Relaxed) {
-            return Ok(None);
+            return false;
         }
         if tree.nodes[id].kind == Kind::File {
             if let Some(index) = tree.nodes[id].category {
@@ -349,11 +406,9 @@ pub fn scan(
     }
     drop(category_bytes);
     if cancel.load(Ordering::Relaxed) {
-        return Ok(None);
+        return false;
     }
-    tree.errors = counters.errors.load(Ordering::Relaxed);
-    report(counters.snapshot(path));
-    Ok(Some(tree))
+    true
 }
 
 #[derive(Clone, Serialize, Debug)]
@@ -549,6 +604,61 @@ impl Tree {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(windows)]
+    #[test]
+    fn only_local_drive_roots_use_mft() {
+        assert_eq!(drive_letter(Path::new(r"C:\")), Some(b'C'));
+        for path in [
+            r"C:\Windows",
+            r"\\server\share\",
+            r"\server\share\",
+            "relative",
+            "C:",
+            r"\",
+            r"\\?\C:\",
+        ] {
+            assert_eq!(drive_letter(Path::new(path)), None, "{path}");
+        }
+        assert_eq!(root_name(Path::new(r"c:/")), "c:/");
+    }
+
+    #[cfg(windows)]
+    #[test]
+    #[ignore = "Scans a whole drive twice; run elevated with --nocapture"]
+    fn mft_matches_directory_scan() {
+        let path = PathBuf::from(
+            std::env::var_os("DISKMAPPER_MFT_DRIVE").unwrap_or_else(|| r"C:\".into()),
+        );
+        let root_path = strip_verbatim_prefix(&fs::canonicalize(&path).unwrap());
+        assert!(
+            drive_letter(&root_path).is_some(),
+            "DISKMAPPER_MFT_DRIVE must be a local drive root"
+        );
+        let cancel = AtomicBool::new(false);
+        let start = Instant::now();
+        let mft = crate::mft::scan_volume(&root_path, &cancel, &|_| {})
+            .unwrap_or_else(|error| panic!("MFT scan failed; run elevated: {error}"))
+            .expect("MFT scan was cancelled");
+        let mft_time = start.elapsed();
+        let start = Instant::now();
+        let walk = scan_walk(&path, root_path, &cancel, |_| {}).unwrap();
+        let walk_time = start.elapsed();
+        for (label, tree, elapsed) in [("MFT", &mft, mft_time), ("Directory", &walk, walk_time)] {
+            let root = &tree.nodes[0];
+            eprintln!(
+                "{label}: {elapsed:?}, files={}, folders={}, size={}, errors={}",
+                root.files, root.folders, root.size, tree.errors
+            );
+        }
+        eprintln!(
+            "MFT - directory: files={}, folders={}, size={}, errors={}",
+            i128::from(mft.nodes[0].files) - i128::from(walk.nodes[0].files),
+            i128::from(mft.nodes[0].folders) - i128::from(walk.nodes[0].folders),
+            i128::from(mft.nodes[0].size) - i128::from(walk.nodes[0].size),
+            i128::from(mft.errors) - i128::from(walk.errors)
+        );
+    }
 
     #[test]
     fn progress_can_cancel_a_large_directory_before_assembly() {
