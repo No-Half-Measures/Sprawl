@@ -14,7 +14,8 @@ Dependencies are already installed. Start the desktop app with `npm run tauri de
 `npm run build` builds the frontend; `npm run tauri build` packages the app.
 A standalone browser preview cannot scan: disk access is provided by the Tauri backend.
 
-Home can add **Scan with DiskMapper** to Explorer's right-click menu for folders,
+The header's settings (cog) menu offers **Always run as administrator** and can
+add **Scan with DiskMapper** to Explorer's right-click menu for folders,
 folder backgrounds and drives (under **Show more options** on Windows 11).
 It scans the chosen path in the existing window, or opens DiskMapper if needed.
 
@@ -44,8 +45,9 @@ the MFT and the directory walk and prints timings and differences.
 - Rust scans on a background thread with one Rayon task per directory. When the
   app runs as administrator, whole NTFS drive scans read the master file table
   directly instead, falling back to the directory walk on any failure. Home can
-  relaunch the app elevated through UAC, once or on every start. An
-  atomic flag cancels scans; a worker mutex serializes replacements. Completed
+  relaunch the app elevated through UAC; the header's settings menu can enable
+  elevation on every start. An atomic flag cancels scans; a worker mutex
+  serializes replacements. Completed
   trees are immutable arena snapshots. Files store their own names, with parent
   indices used to reconstruct paths. Folder counts exclude the folder itself.
 - NTFS drive rescans replay the USN journal when a saved checkpoint is usable, falling back to a full scan when history or records are unavailable.

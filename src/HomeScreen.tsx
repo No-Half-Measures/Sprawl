@@ -12,8 +12,6 @@ interface Props {
   admin?: AdminStatus | null;
   adminBusy?: boolean;
   restartAsAdmin: () => Promise<void>;
-  setAlwaysElevate: (enabled: boolean) => Promise<void>;
-  setContextMenu: (enabled: boolean) => Promise<void>;
   now?: number;
 }
 
@@ -29,8 +27,6 @@ export default function HomeScreen({
   admin,
   adminBusy = false,
   restartAsAdmin,
-  setAlwaysElevate,
-  setContextMenu,
   now = Date.now(),
 }: Props) {
   const disabled = !ready || opening !== null || adminBusy;
@@ -61,24 +57,6 @@ export default function HomeScreen({
             {!admin.elevated && (
               <button disabled={disabled} onClick={() => void restartAsAdmin()}>Restart as administrator</button>
             )}
-            <label>
-              <input
-                type="checkbox"
-                checked={admin.alwaysElevate}
-                disabled={disabled}
-                onChange={e => void setAlwaysElevate(e.target.checked)}
-              />
-              Always run as administrator
-            </label>
-            <label>
-              <input
-                type="checkbox"
-                checked={admin.contextMenuEnabled}
-                disabled={disabled}
-                onChange={e => void setContextMenu(e.target.checked)}
-              />
-              Add "Scan with DiskMapper" to Explorer's right-click menu
-            </label>
           </div>
         )}
         <div className="drive-grid">

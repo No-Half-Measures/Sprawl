@@ -34,6 +34,14 @@ strong { font-weight: 600; }
 .header-note { color: var(--muted); font-size: 13px; }
 .header-actions { margin-left: auto; display: flex; gap: 8px; }
 .header-actions button { padding: 6px 12px; }
+.settings-menu { position: relative; }
+.header-actions .settings-button { display: grid; place-items: center; width: 32px; height: 32px; padding: 0; background: transparent; border-color: transparent; }
+.header-actions .settings-button:hover,.settings-button[aria-expanded="true"] { background: var(--hover); }
+.settings-panel { position: absolute; top: calc(100% + 8px); right: 0; z-index: 45; width: 340px; padding: 16px; border: 1px solid var(--line); border-radius: 8px; background: var(--surface); box-shadow: 0 5px 20px #0003; }
+.settings-panel h2 { margin-bottom: 14px; }
+.settings-panel label { display: flex; align-items: flex-start; gap: 8px; font-size: 13px; line-height: 1.5; }
+.settings-panel label + label { margin-top: 12px; }
+.settings-panel input { flex-shrink: 0; margin: 3px 0 0; accent-color: var(--accent); }
 .banner { display: flex; align-items: center; justify-content: space-between; padding: 9px 28px; background: var(--raised); border-bottom: 1px solid var(--line); gap: 20px; }
 .banner.error { color: var(--error); }
 .banner button { padding: 0 7px; background: transparent; font-size: 18px; border: 0; }
@@ -51,8 +59,6 @@ strong { font-weight: 600; }
 .admin-row { display: flex; flex-wrap: wrap; align-items: center; gap: 10px 16px; padding: 10px 0; color: var(--muted); font-size: 13px; }
 .admin-row > span { flex: 1 1 300px; }
 .admin-row button { color: var(--text); font-size: 13px; padding: 6px 10px; }
-.admin-row label { display: flex; align-items: center; gap: 6px; }
-.admin-row input { accent-color: var(--accent); }
 .drive-grid { display: grid; grid-template-columns: repeat(auto-fit,minmax(285px,1fr)); gap: 16px; margin-top: 12px; }
 .drive-card { min-width: 0; border: 1px solid var(--line); border-radius: 9px; background: var(--surface); padding: 20px; }
 .drive-title { display: flex; gap: 14px; align-items: center; margin-bottom: 18px; }

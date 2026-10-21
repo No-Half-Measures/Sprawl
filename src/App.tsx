@@ -3,6 +3,7 @@ import { invoke } from '@tauri-apps/api/core';
 import { listen, type UnlistenFn } from '@tauri-apps/api/event';
 import { open } from '@tauri-apps/plugin-dialog';
 import HomeScreen from './HomeScreen';
+import SettingsMenu from './SettingsMenu';
 import ScanScreen from './ScanScreen';
 import ResultsScreen, { SnapshotBanner } from './ResultsScreen';
 import DeleteDialog from './DeleteDialog';
@@ -494,8 +495,8 @@ export default function App() {
           DiskMapper
         </div>
         <span className="header-note">A little perspective on your space.</span>
-        {phase === 'results' && (
-          <div className="header-actions">
+        <div className="header-actions">
+          {phase === 'results' && <>
             <button onClick={() => void start(scanPath)}>Rescan</button>
             <button
               onClick={() => {
@@ -505,8 +506,9 @@ export default function App() {
             >
               Home
             </button>
-          </div>
-        )}
+          </>}
+          {admin?.supported && <SettingsMenu admin={admin} busy={adminBusy} setAlwaysElevate={setAlwaysElevate} setContextMenu={setContextMenu} />}
+        </div>
       </header>
       {error && (
         <div
@@ -549,8 +551,6 @@ export default function App() {
           admin={admin}
           adminBusy={adminBusy}
           restartAsAdmin={restartAsAdmin}
-          setAlwaysElevate={setAlwaysElevate}
-          setContextMenu={setContextMenu}
         />
       )}
       {phase === 'scanning' && (

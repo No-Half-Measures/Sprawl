@@ -3,6 +3,7 @@ import * as React from 'react';
 import { Children, isValidElement, type ComponentProps, type ReactElement, type ReactNode } from 'react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import HomeScreen from './HomeScreen';
+import SettingsMenu from './SettingsMenu';
 import ResultsScreen, { SnapshotBanner } from './ResultsScreen';
 import DeleteDialog from './DeleteDialog';
 import ScanScreen from './ScanScreen';
@@ -270,8 +271,6 @@ describe('screen details', () => {
         openSaved={async () => {}}
         clearSaved={async () => {}}
         restartAsAdmin={async () => {}}
-        setAlwaysElevate={async () => {}}
-        setContextMenu={async () => {}}
       />,
     );
     expect(html.match(/class="drive-card"/g)).toHaveLength(5);
@@ -293,7 +292,7 @@ describe('saved scan screens', () => {
     const openSaved = vi.fn(async (_path: string) => {});
     const clearSaved = vi.fn(async () => {});
     const folder = { ...scan, path: 'C:\\Users\\Example' };
-    const screen = HomeScreen({ drives: [drive], ready: true, start: async () => {}, pickFolder: async () => {}, saved: [scan, folder], openSaved, clearSaved, restartAsAdmin: async () => {}, setAlwaysElevate: async () => {}, setContextMenu: async () => {}, now });
+    const screen = HomeScreen({ drives: [drive], ready: true, start: async () => {}, pickFolder: async () => {}, saved: [scan, folder], openSaved, clearSaved, restartAsAdmin: async () => {}, now });
     const html = renderToStaticMarkup(screen);
     expect(html).toContain('Last scanned 3 days ago · 412 GB');
     expect(html).toContain('Open last scan');
@@ -308,7 +307,7 @@ describe('saved scan screens', () => {
   });
   it('labels only the opening snapshot and disables all open and scan buttons', () => {
     const folder = { ...scan, path: 'C:\\Users\\Example' };
-    const props = { drives: [drive], ready: true, start: async () => {}, pickFolder: async () => {}, saved: [scan, folder], openSaved: async () => {}, clearSaved: async () => {}, restartAsAdmin: async () => {}, setAlwaysElevate: async () => {}, setContextMenu: async () => {}, now };
+    const props = { drives: [drive], ready: true, start: async () => {}, pickFolder: async () => {}, saved: [scan, folder], openSaved: async () => {}, clearSaved: async () => {}, restartAsAdmin: async () => {}, now };
     for (const opening of [scan.path, folder.path]) {
       const html = renderToStaticMarkup(<HomeScreen {...props} opening={opening} />);
       const controls = html.match(/<button\b[^>]*>[^<]*<\/button>/g)!;
@@ -318,7 +317,7 @@ describe('saved scan screens', () => {
     expect(renderToStaticMarkup(<HomeScreen {...props} />)).not.toContain('disabled=""');
   });
   it('styles stale drive scans as warnings and fresh scans neutrally', () => {
-    const props = { drives: [drive], ready: true, start: async () => {}, pickFolder: async () => {}, openSaved: async () => {}, clearSaved: async () => {}, restartAsAdmin: async () => {}, setAlwaysElevate: async () => {}, setContextMenu: async () => {}, now };
+    const props = { drives: [drive], ready: true, start: async () => {}, pickFolder: async () => {}, openSaved: async () => {}, clearSaved: async () => {}, restartAsAdmin: async () => {}, now };
     expect(renderToStaticMarkup(<HomeScreen {...props} saved={[scan]} />)).not.toContain('last-scan warning');
     expect(renderToStaticMarkup(<HomeScreen {...props} saved={[{ ...scan, scannedAt: now - 8 * 86400000 }]} />)).toContain('last-scan warning');
     expect(renderToStaticMarkup(<HomeScreen {...props} saved={[{ ...scan, driveFree: drive.free + 18 * 1024 ** 3 }]} />)).toContain('last-scan warning');
@@ -349,32 +348,32 @@ describe('saved scan screens', () => {
   });
 });
 
+type Control = { children?: ReactNode; checked?: boolean; disabled?: boolean; onClick?: () => void; onChange?: (e: { target: { checked: boolean } }) => void };
+function controls(node: ReactNode): ReactElement<Control>[] {
+  return Children.toArray(node).flatMap(child => {
+    if (!isValidElement<Control>(child)) return [];
+    return child.type === 'button' || child.type === 'input' ? [child] : controls(child.props.children);
+  });
+}
+
 describe('administrator controls', () => {
-  const props = { drives: [], ready: true, saved: [], start: async () => {}, pickFolder: async () => {}, openSaved: async () => {}, clearSaved: async () => {}, restartAsAdmin: async () => {}, setAlwaysElevate: async () => {}, setContextMenu: async () => {} };
+  const props = { drives: [], ready: true, saved: [], start: async () => {}, pickFolder: async () => {}, openSaved: async () => {}, clearSaved: async () => {}, restartAsAdmin: async () => {} };
   const admin = { supported: true, elevated: false, alwaysElevate: false, declined: false, contextMenuEnabled: false };
-  type Control = { children?: ReactNode; checked?: boolean; disabled?: boolean; onClick?: () => void; onChange?: (e: { target: { checked: boolean } }) => void };
-  function controls(node: ReactNode): ReactElement<Control>[] {
-    return Children.toArray(node).flatMap(child => {
-      if (!isValidElement<Control>(child)) return [];
-      return child.type === 'button' || child.type === 'input' ? [child] : controls(child.props.children);
-    });
-  }
-  it('offers restart and an unchecked preference when not elevated', () => {
+  it('offers restart when not elevated and leaves preferences out of Home', () => {
     const screen = HomeScreen({ ...props, admin });
     const html = renderToStaticMarkup(screen);
     expect(html).toContain('Drive scans are much faster when DiskMapper runs as administrator.');
     expect(html).toContain('Restart as administrator');
-    expect(html).toContain('Always run as administrator');
-    const checkbox = controls(screen).find(c => c.type === 'input')!;
-    expect(checkbox.props.checked).toBe(false);
-    expect(checkbox.props.disabled).toBe(false);
+    expect(html).not.toContain('Always run as administrator');
+    expect(html).not.toContain('Explorer');
+    expect(html).not.toContain('type="checkbox"');
+    expect(controls(screen).find(c => c.props.children === 'Restart as administrator')!.props.disabled).toBe(false);
   });
-  it('shows the fast path and keeps the preference when elevated', () => {
+  it('shows the fast path when elevated', () => {
     const html = renderToStaticMarkup(<HomeScreen {...props} admin={{ ...admin, elevated: true, alwaysElevate: true }} />);
     expect(html).toContain('Running as administrator · drive scans use the fast path.');
     expect(html).not.toContain('Restart as administrator');
-    expect(html).toContain('Always run as administrator');
-    expect(html).toContain('checked=""');
+    expect(html).not.toContain('type="checkbox"');
   });
   it('hides administrator controls when unsupported or not loaded', () => {
     for (const status of [undefined, null, { ...admin, supported: false }]) {
@@ -383,42 +382,151 @@ describe('administrator controls', () => {
       expect(html).not.toContain('administrator');
     }
   });
-  it('calls restart and toggles the controlled preference in both directions', () => {
+  it('calls restart', () => {
     const restartAsAdmin = vi.fn(async () => {});
-    const setAlwaysElevate = vi.fn(async (_enabled: boolean) => {});
-    for (const enabled of [false, true]) {
-      const screen = HomeScreen({ ...props, admin: { ...admin, alwaysElevate: enabled }, restartAsAdmin, setAlwaysElevate });
-      const items = controls(screen);
-      if (!enabled) items.find(c => c.props.children === 'Restart as administrator')!.props.onClick!();
-      const checkbox = items.find(c => c.type === 'input')!;
-      expect(checkbox.props.checked).toBe(enabled);
-      checkbox.props.onChange!({ target: { checked: !enabled } });
-    }
+    const screen = HomeScreen({ ...props, admin, restartAsAdmin });
+    controls(screen).find(c => c.props.children === 'Restart as administrator')!.props.onClick!();
     expect(restartAsAdmin).toHaveBeenCalledOnce();
-    expect(setAlwaysElevate.mock.calls).toEqual([[true], [false]]);
   });
-  it('disables restart and the preference while home is busy', () => {
+  it('disables restart while home is busy', () => {
     for (const busy of [{ ready: false }, { opening: 'C:\\' }, { adminBusy: true }]) {
       const items = controls(HomeScreen({ ...props, admin, ...busy }));
       expect(items.find(c => c.props.children === 'Restart as administrator')!.props.disabled).toBe(true);
-      expect(items.find(c => c.type === 'input')!.props.disabled).toBe(true);
-      expect(items.filter(c => c.type === 'input')[1].props.disabled).toBe(true);
     }
   });
-  it('shows the Explorer checkbox at either elevation and toggles its registry state', () => {
+});
+
+describe('settings menu', () => {
+  const admin = { supported: true, elevated: false, alwaysElevate: false, declined: false, contextMenuEnabled: false };
+  const props: ComponentProps<typeof SettingsMenu> = { admin, busy: false, setAlwaysElevate: async () => {}, setContextMenu: async () => {} };
+
+  function mountSettings(initial = props) {
+    let open = false;
+    let cleanup: (() => void) | undefined;
+    let effect: React.EffectCallback;
+    let screen: ReactNode;
+    const inside = {};
+    const focus = vi.fn();
+    const listeners = new Map<string, (event: unknown) => void>();
+    vi.stubGlobal('document', {
+      addEventListener: (type: string, listener: (event: unknown) => void) => listeners.set(type, listener),
+      removeEventListener: (type: string, listener: (event: unknown) => void) => {
+        if (listeners.get(type) === listener) listeners.delete(type);
+      },
+    });
+    vi.mocked(React.useState).mockImplementation((() => [open, (next: boolean) => { open = next; }]) as typeof React.useState);
+    vi.mocked(React.useEffect).mockImplementation(run => { effect = run; });
+    function render(next = initial) {
+      cleanup?.();
+      vi.mocked(React.useRef)
+        .mockReturnValueOnce({ current: { contains: (target: unknown) => target === inside } })
+        .mockReturnValueOnce({ current: { focus } });
+      screen = SettingsMenu(next);
+      cleanup = effect() || undefined;
+    }
+    render();
+    return {
+      render,
+      html: () => renderToStaticMarkup(screen),
+      controls: () => controls(screen),
+      event: (type: string, event: unknown) => listeners.get(type)?.(event),
+      inside, focus, listeners,
+      unmount: () => cleanup?.(),
+    };
+  }
+  afterEach(async () => {
+    const actual = await vi.importActual<typeof React>('react');
+    vi.mocked(React.useState).mockImplementation(actual.useState);
+    vi.mocked(React.useRef).mockImplementation(actual.useRef);
+    vi.mocked(React.useEffect).mockImplementation(actual.useEffect);
+  });
+
+  it('renders the cog closed by default and toggles the panel', () => {
+    const menu = mountSettings();
+    expect(menu.html()).toContain('aria-label="Settings"');
+    expect(menu.html()).toContain('title="Settings"');
+    expect(menu.html()).toContain('aria-haspopup="dialog"');
+    expect(menu.html()).toContain('aria-expanded="false"');
+    expect(menu.html()).toContain('<svg');
+    expect(menu.html()).not.toContain('type="checkbox"');
+    menu.controls()[0].props.onClick!();
+    menu.render();
+    expect(menu.html()).toContain('aria-expanded="true"');
+    expect(menu.html()).toContain('<h2>Settings</h2>');
+    expect(menu.html()).toContain('Always run as administrator');
+    expect(menu.html()).toContain('Add &quot;Scan with DiskMapper&quot; to Explorer&#x27;s right-click menu');
+    expect(menu.controls().filter(c => c.type === 'input')).toHaveLength(2);
+    menu.controls()[0].props.onClick!();
+    menu.render();
+    expect(menu.html()).not.toContain('type="checkbox"');
+    expect(menu.listeners.size).toBe(0);
+    menu.unmount();
+  });
+  it('shows the controlled states at either elevation and toggles both preferences in both directions without closing', () => {
+    const setAlwaysElevate = vi.fn(async (_enabled: boolean) => {});
     const setContextMenu = vi.fn(async (_enabled: boolean) => {});
+    const menu = mountSettings({ ...props, setAlwaysElevate, setContextMenu });
+    menu.controls()[0].props.onClick!();
     for (const elevated of [false, true]) {
       for (const enabled of [false, true]) {
-        const screen = HomeScreen({ ...props, admin: { ...admin, elevated, contextMenuEnabled: enabled }, setContextMenu });
-        expect(renderToStaticMarkup(screen)).toContain('Add &quot;Scan with DiskMapper&quot; to Explorer&#x27;s right-click menu');
-        const checkbox = controls(screen).filter(c => c.type === 'input')[1];
-        expect(checkbox.props.checked).toBe(enabled);
-        expect(checkbox.props.disabled).toBe(false);
-        checkbox.props.onChange!({ target: { checked: !enabled } });
+        menu.render({ ...props, admin: { ...admin, elevated, alwaysElevate: enabled, contextMenuEnabled: !enabled }, setAlwaysElevate, setContextMenu });
+        const checkboxes = menu.controls().filter(c => c.type === 'input');
+        expect(checkboxes[0].props.checked).toBe(enabled);
+        expect(checkboxes[1].props.checked).toBe(!enabled);
+        for (const checkbox of checkboxes) expect(checkbox.props.disabled).toBe(false);
+        checkboxes[0].props.onChange!({ target: { checked: !enabled } });
+        checkboxes[1].props.onChange!({ target: { checked: enabled } });
+        menu.render();
+        expect(menu.html()).toContain('aria-expanded="true"');
       }
     }
-    expect(setContextMenu.mock.calls).toEqual([[true], [false], [true], [false]]);
-    expect(renderToStaticMarkup(<HomeScreen {...props} admin={{ ...admin, supported: false }} />)).not.toContain('Explorer');
+    expect(setAlwaysElevate.mock.calls).toEqual([[true], [false], [true], [false]]);
+    expect(setContextMenu.mock.calls).toEqual([[false], [true], [false], [true]]);
+    menu.unmount();
+  });
+  it('disables both preferences while busy', () => {
+    const menu = mountSettings({ ...props, busy: true });
+    menu.controls()[0].props.onClick!();
+    menu.render();
+    const checkboxes = menu.controls().filter(c => c.type === 'input');
+    expect(checkboxes).toHaveLength(2);
+    expect(checkboxes.every(c => c.props.disabled)).toBe(true);
+    menu.unmount();
+  });
+  it('closes on Escape, returns focus to the cog and removes listeners', () => {
+    const menu = mountSettings();
+    menu.controls()[0].props.onClick!();
+    menu.render();
+    menu.event('keydown', { key: 'Enter' });
+    menu.render();
+    expect(menu.html()).toContain('aria-expanded="true"');
+    const preventDefault = vi.fn();
+    menu.event('keydown', { key: 'Escape', preventDefault });
+    menu.render();
+    expect(menu.html()).toContain('aria-expanded="false"');
+    expect(menu.html()).not.toContain('type="checkbox"');
+    expect(menu.focus).toHaveBeenCalledOnce();
+    expect(preventDefault).toHaveBeenCalledOnce();
+    expect(menu.listeners.size).toBe(0);
+    menu.unmount();
+  });
+  it('keeps the panel open for inside mousedown and closes it outside', () => {
+    const menu = mountSettings();
+    menu.controls()[0].props.onClick!();
+    menu.render();
+    menu.event('mousedown', { target: menu.inside });
+    menu.render();
+    expect(menu.html()).toContain('aria-expanded="true"');
+    menu.event('mousedown', { target: {} });
+    menu.render();
+    expect(menu.html()).toContain('aria-expanded="false"');
+    expect(menu.focus).not.toHaveBeenCalled();
+    expect(menu.listeners.size).toBe(0);
+    menu.controls()[0].props.onClick!();
+    menu.render();
+    expect(menu.listeners.size).toBe(2);
+    menu.unmount();
+    expect(menu.listeners.size).toBe(0);
   });
 });
 
@@ -426,7 +534,7 @@ describe('Explorer scan requests', () => {
   const admin = { supported: true, elevated: false, alwaysElevate: false, declined: false, contextMenuEnabled: false };
   const events = new Map<string, (event: { payload: unknown }) => void>();
 
-  function mountApp(path: string | null = null) {
+  function mountApp(path: string | null = null, status = admin) {
     const values: unknown[] = [];
     const effects: { deps?: React.DependencyList; run: React.EffectCallback; pending: boolean; cleanup?: () => void }[] = [];
     let slot = 0;
@@ -464,7 +572,7 @@ describe('Explorer scan requests', () => {
     });
     let pending = path;
     vi.mocked(invoke).mockReset().mockImplementation(async command => {
-      if (command === 'admin_status') return admin;
+      if (command === 'admin_status') return status;
       if (command === 'take_launch_path') {
         const result = pending;
         pending = null;
@@ -517,6 +625,31 @@ describe('Explorer scan requests', () => {
     vi.mocked(React.useEffect).mockImplementation(actual.useEffect);
   });
 
+  it('keeps settings at the end of the header on Home, scanning and results', async () => {
+    const app = mountApp();
+    expect(app.html()).not.toContain('aria-label="Settings"');
+    await app.settle();
+    for (const phase of ['home', 'scanning', 'results']) {
+      app.find(SettingsMenu);
+      const actions = Children.toArray(app.find('header').props.children).slice(-1)[0] as ReactElement<{ className: string; children: ReactNode }>;
+      expect(actions.props.className).toBe('header-actions');
+      expect((Children.toArray(actions.props.children).slice(-1)[0] as ReactElement).type).toBe(SettingsMenu);
+      expect(controls(actions).map(c => c.props.children)).toEqual(phase === 'results' ? ['Rescan', 'Home'] : []);
+      if (phase === 'home') events.get('scan-requested')!({ payload: 'D:\\Photos' });
+      if (phase === 'scanning') events.get('scan-complete')!({ payload: { scanId: 1, root: current } });
+      await app.settle();
+    }
+    app.unmount();
+  });
+
+  it('hides settings when administrator controls are unsupported', async () => {
+    const app = mountApp(null, { ...admin, supported: false });
+    await app.settle();
+    expect(app.html()).toContain('class="header-actions"');
+    expect(app.html()).not.toContain('aria-label="Settings"');
+    app.unmount();
+  });
+
   it('takes the launch path after all listeners are ready and uses the normal scan flow once', async () => {
     const app = mountApp('D:\\Photos');
     expect(invoke).not.toHaveBeenCalledWith('take_launch_path');
@@ -556,24 +689,24 @@ describe('Explorer scan requests', () => {
   it('reloads registry state after toggles and surfaces errors in the error banner', async () => {
     const app = mountApp();
     await app.settle();
-    expect(app.find(HomeScreen).props.admin?.contextMenuEnabled).toBe(false);
+    expect(app.find(SettingsMenu).props.admin.contextMenuEnabled).toBe(false);
     vi.mocked(invoke).mockImplementation(async command => {
       if (command === 'set_context_menu') return;
       if (command === 'admin_status') return { ...admin, contextMenuEnabled: true };
       return [];
     });
-    await app.find(HomeScreen).props.setContextMenu(true);
+    await app.find(SettingsMenu).props.setContextMenu(true);
     await app.settle();
     expect(invoke).toHaveBeenCalledWith('set_context_menu', { enabled: true });
-    expect(app.find(HomeScreen).props.admin?.contextMenuEnabled).toBe(true);
+    expect(app.find(SettingsMenu).props.admin.contextMenuEnabled).toBe(true);
     vi.mocked(invoke).mockImplementation(async command => {
       if (command === 'set_context_menu') throw 'Registry access denied';
       if (command === 'admin_status') return { ...admin, contextMenuEnabled: true };
       return [];
     });
-    await app.find(HomeScreen).props.setContextMenu(false);
+    await app.find(SettingsMenu).props.setContextMenu(false);
     await app.settle();
-    expect(app.find(HomeScreen).props.admin?.contextMenuEnabled).toBe(true);
+    expect(app.find(SettingsMenu).props.admin.contextMenuEnabled).toBe(true);
     expect(app.html()).toContain('Registry access denied');
     app.unmount();
   });

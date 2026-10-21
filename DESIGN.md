@@ -71,8 +71,8 @@ A calm, clean, dark-first look that also respects the system light theme. There 
 ### 1. Home
 - Each drive gets a card with its letter and label, a used/free bar, the text "412 GB used of 1 TB", and a **Scan** button.
 - A **Scan a folder…** button opens the folder picker.
-- **Add "Scan with DiskMapper" to Explorer's right-click menu** registers folders, backgrounds and drives per user, without admin access. The checkbox reads the registry and repairs stale executable paths when enabled. Explorer launches scan in the existing window, ignoring requests during deletion; Windows 11 shows the item under **Show more options**.
-- On Windows, an admin row offers **Restart as administrator** (UAC relaunch) when not elevated and an **Always run as administrator** checkbox. The preference lives in `settings.json` in the app's local data directory; when set, startup relaunches elevated and continues unelevated if UAC is declined.
+- The header's settings (cog) menu is available on every screen on Windows. **Add "Scan with DiskMapper" to Explorer's right-click menu** registers folders, backgrounds and drives per user, without admin access. The checkbox reads the registry and repairs stale executable paths when enabled. Explorer launches scan in the existing window, ignoring requests during deletion; Windows 11 shows the item under **Show more options**.
+- On Windows, an admin row offers **Restart as administrator** (UAC relaunch) when not elevated. **Always run as administrator** lives in the header's settings (cog) menu. The preference lives in `settings.json` in the app's local data directory; when set, startup relaunches elevated and continues unelevated if UAC is declined.
 
 ### 2. Scanning
 - While scanning, the screen shows big live counters for files found and size found, a thin current-path line that is truncated in the middle, an indeterminate progress bar (the total isn't known ahead of time), and a **Cancel** button.
