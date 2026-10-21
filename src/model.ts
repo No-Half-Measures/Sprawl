@@ -6,7 +6,7 @@ export interface GrownFile { id: number; name: string; relativePath: string; siz
 export interface Changes { since: number; previousSize: number | null; children: { id: number; previousSize: number | null }[]; removed: { items: number; bytes: number }; grown: GrownFile[] }
 export interface Breakdown { category: string; bytes: number; files: number }
 export interface Drive { mount: string; label: string; total: number; free: number }
-export interface AdminStatus { supported: boolean; elevated: boolean; alwaysElevate: boolean; declined: boolean }
+export interface AdminStatus { supported: boolean; elevated: boolean; alwaysElevate: boolean; declined: boolean; contextMenuEnabled: boolean }
 export interface SavedScan { version: number; path: string; scannedAt: number; size: number; files: number; folders: number; recycled?: number; deleted?: number; errors: number; driveFree: number | null; driveTotal: number | null }
 export interface Progress { files: number; folders: number; bytes: number; errors: number; currentPath: string }
 export const emptyProgress: Progress = { files: 0, folders: 0, bytes: 0, errors: 0, currentPath: '' };

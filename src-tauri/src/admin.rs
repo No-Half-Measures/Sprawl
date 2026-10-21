@@ -114,7 +114,11 @@ pub fn relaunch() -> Result<(), String> {
     let mut parameters = vec![];
     for arg in std::env::args_os()
         .skip(1)
-        .chain(std::iter::once("--elevated".into()))
+        .filter(|arg| !arg.to_string_lossy().starts_with("--elevated-parent="))
+        .chain([
+            "--elevated".into(),
+            format!("--elevated-parent={}", std::process::id()).into(),
+        ])
     {
         parameters.extend(quote_arg(&arg));
         parameters.push(b' ' as u16);
@@ -139,4 +143,35 @@ pub fn relaunch() -> Result<(), String> {
         return Err(format!("Could not restart as administrator: {error}"));
     }
     Ok(())
+}
+
+#[cfg(windows)]
+pub fn wait_for_parent() -> Result<(), String> {
+    use windows_sys::Win32::{
+        Foundation::{CloseHandle, ERROR_INVALID_PARAMETER, WAIT_OBJECT_0},
+        System::Threading::{OpenProcess, PROCESS_SYNCHRONIZE, WaitForSingleObject},
+    };
+
+    let parent = std::env::args()
+        .find_map(|arg| arg.strip_prefix("--elevated-parent=")?.parse::<u32>().ok());
+    let Some(parent) = parent else { return Ok(()) };
+    // The elevated child must not forward to the instance that is about to exit.
+    let process = unsafe { OpenProcess(PROCESS_SYNCHRONIZE, 0, parent) };
+    if process.is_null() {
+        let error = io::Error::last_os_error();
+        return if error.raw_os_error() == Some(ERROR_INVALID_PARAMETER as i32) {
+            Ok(())
+        } else {
+            Err(format!(
+                "Could not wait for the previous DiskMapper instance: {error}"
+            ))
+        };
+    }
+    let result = unsafe { WaitForSingleObject(process, 30_000) };
+    unsafe { CloseHandle(process) };
+    if result == WAIT_OBJECT_0 {
+        Ok(())
+    } else {
+        Err("The previous DiskMapper instance did not exit.".into())
+    }
 }

@@ -4,6 +4,7 @@ mod changes;
 mod mft;
 mod recycle;
 mod scanner;
+mod shell;
 
 use cache::SavedScan;
 use scanner::{Kind, Tree};
@@ -59,6 +60,8 @@ struct AppState {
     cache: Mutex<()>,
     deletes: Mutex<()>,
     admin_declined: AtomicBool,
+    launch_path: Mutex<Option<String>>,
+    launch_ready: AtomicBool,
 }
 
 fn tree(state: &AppState) -> Result<Arc<Tree>, String> {
@@ -150,6 +153,7 @@ struct AdminStatus {
     elevated: bool,
     always_elevate: bool,
     declined: bool,
+    context_menu_enabled: bool,
 }
 
 #[tauri::command]
@@ -162,7 +166,20 @@ fn admin_status(app: tauri::AppHandle, state: State<'_, AppState>) -> AdminStatu
         elevated: admin::elevated(),
         always_elevate: settings.always_elevate,
         declined: state.admin_declined.load(Ordering::Relaxed),
+        context_menu_enabled: shell::context_menu_enabled(),
     }
+}
+
+#[tauri::command]
+fn set_context_menu(enabled: bool) -> Result<(), String> {
+    shell::set_context_menu(enabled)
+}
+
+#[tauri::command]
+fn take_launch_path(state: State<'_, AppState>) -> Option<String> {
+    let mut path = state.launch_path.lock().ok()?;
+    state.launch_ready.store(true, Ordering::Relaxed);
+    path.take()
 }
 
 #[tauri::command]
@@ -738,7 +755,10 @@ pub fn run() {
     let result = tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_dialog::init())
-        .manage(AppState::default())
+        .manage(AppState {
+            launch_path: Mutex::new(shell::launch_path(std::env::args().skip(1))),
+            ..Default::default()
+        })
         .setup(|app| {
             if cfg!(windows)
                 && settings_path(app.handle())
@@ -752,11 +772,39 @@ pub fn run() {
                     Err(_) => app
                         .state::<AppState>()
                         .admin_declined
+    #[cfg(windows)]
+    if let Err(error) = admin::wait_for_parent() {
+        eprintln!("{error}");
+        return;
+    }
                         .store(true, Ordering::Relaxed),
+        .plugin(tauri_plugin_single_instance::init(|app, args, _cwd| {
+            if let Some(window) = app.get_webview_window("main") {
+                let _ = window.unminimize();
+                let _ = window.show();
+                let _ = window.set_focus();
+            }
+            if let Some(path) = shell::launch_path(args.into_iter().skip(1)) {
+                let state = app.state::<AppState>();
+                if let Ok(mut pending) = state.launch_path.lock() {
+                    if state.launch_ready.load(Ordering::Relaxed) {
+                        let _ = app.emit("scan-requested", path);
+                    } else {
+                        *pending = Some(path);
+                    }
+                }
+            }
+        }))
                 }
             }
             Ok(())
         })
+            #[cfg(windows)]
+            if admin::elevated()
+                && let Err(error) = shell::allow_scan_requests(&app.config().identifier)
+            {
+                eprintln!("{error}");
+            }
         .invoke_handler(tauri::generate_handler![
             admin_status,
             set_always_elevate,
@@ -776,6 +824,8 @@ pub fn run() {
             get_node_path,
             reveal_in_explorer,
             open_folder
+            set_context_menu,
+            take_launch_path,
         ])
         .run(tauri::generate_context!());
     if let Err(error) = result {

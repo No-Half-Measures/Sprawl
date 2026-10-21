@@ -1,4 +1,5 @@
 import { renderToStaticMarkup } from 'react-dom/server';
+import * as React from 'react';
 import { Children, isValidElement, type ComponentProps, type ReactElement, type ReactNode } from 'react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import HomeScreen from './HomeScreen';
@@ -6,6 +7,17 @@ import ResultsScreen, { SnapshotBanner } from './ResultsScreen';
 import DeleteDialog from './DeleteDialog';
 import ScanScreen from './ScanScreen';
 import { categories, formatSize, percent, type SavedScan, type TreeNode } from './model';
+import { invoke } from '@tauri-apps/api/core';
+import { listen } from '@tauri-apps/api/event';
+import App from './App';
+
+vi.mock('@tauri-apps/api/core', () => ({ invoke: vi.fn() }));
+vi.mock('@tauri-apps/api/event', () => ({ listen: vi.fn() }));
+vi.mock('@tauri-apps/plugin-dialog', () => ({ open: vi.fn() }));
+vi.mock('react', async importOriginal => {
+  const actual = await importOriginal<typeof React>();
+  return { ...actual, useState: vi.fn(actual.useState), useRef: vi.fn(actual.useRef), useEffect: vi.fn(actual.useEffect) };
+});
 
 const current: TreeNode = { id: 0, name: 'Other', kind: 'dir', size: 10000, files: 2, folders: 1, category: 'apps' };
 const longName = `${'long-name-'.repeat(15)}.pbo`;
@@ -259,6 +271,7 @@ describe('screen details', () => {
         clearSaved={async () => {}}
         restartAsAdmin={async () => {}}
         setAlwaysElevate={async () => {}}
+        setContextMenu={async () => {}}
       />,
     );
     expect(html.match(/class="drive-card"/g)).toHaveLength(5);
@@ -280,7 +293,7 @@ describe('saved scan screens', () => {
     const openSaved = vi.fn(async (_path: string) => {});
     const clearSaved = vi.fn(async () => {});
     const folder = { ...scan, path: 'C:\\Users\\Example' };
-    const screen = HomeScreen({ drives: [drive], ready: true, start: async () => {}, pickFolder: async () => {}, saved: [scan, folder], openSaved, clearSaved, restartAsAdmin: async () => {}, setAlwaysElevate: async () => {}, now });
+    const screen = HomeScreen({ drives: [drive], ready: true, start: async () => {}, pickFolder: async () => {}, saved: [scan, folder], openSaved, clearSaved, restartAsAdmin: async () => {}, setAlwaysElevate: async () => {}, setContextMenu: async () => {}, now });
     const html = renderToStaticMarkup(screen);
     expect(html).toContain('Last scanned 3 days ago · 412 GB');
     expect(html).toContain('Open last scan');
@@ -295,7 +308,7 @@ describe('saved scan screens', () => {
   });
   it('labels only the opening snapshot and disables all open and scan buttons', () => {
     const folder = { ...scan, path: 'C:\\Users\\Example' };
-    const props = { drives: [drive], ready: true, start: async () => {}, pickFolder: async () => {}, saved: [scan, folder], openSaved: async () => {}, clearSaved: async () => {}, restartAsAdmin: async () => {}, setAlwaysElevate: async () => {}, now };
+    const props = { drives: [drive], ready: true, start: async () => {}, pickFolder: async () => {}, saved: [scan, folder], openSaved: async () => {}, clearSaved: async () => {}, restartAsAdmin: async () => {}, setAlwaysElevate: async () => {}, setContextMenu: async () => {}, now };
     for (const opening of [scan.path, folder.path]) {
       const html = renderToStaticMarkup(<HomeScreen {...props} opening={opening} />);
       const controls = html.match(/<button\b[^>]*>[^<]*<\/button>/g)!;
@@ -305,7 +318,7 @@ describe('saved scan screens', () => {
     expect(renderToStaticMarkup(<HomeScreen {...props} />)).not.toContain('disabled=""');
   });
   it('styles stale drive scans as warnings and fresh scans neutrally', () => {
-    const props = { drives: [drive], ready: true, start: async () => {}, pickFolder: async () => {}, openSaved: async () => {}, clearSaved: async () => {}, restartAsAdmin: async () => {}, setAlwaysElevate: async () => {}, now };
+    const props = { drives: [drive], ready: true, start: async () => {}, pickFolder: async () => {}, openSaved: async () => {}, clearSaved: async () => {}, restartAsAdmin: async () => {}, setAlwaysElevate: async () => {}, setContextMenu: async () => {}, now };
     expect(renderToStaticMarkup(<HomeScreen {...props} saved={[scan]} />)).not.toContain('last-scan warning');
     expect(renderToStaticMarkup(<HomeScreen {...props} saved={[{ ...scan, scannedAt: now - 8 * 86400000 }]} />)).toContain('last-scan warning');
     expect(renderToStaticMarkup(<HomeScreen {...props} saved={[{ ...scan, driveFree: drive.free + 18 * 1024 ** 3 }]} />)).toContain('last-scan warning');
@@ -337,8 +350,8 @@ describe('saved scan screens', () => {
 });
 
 describe('administrator controls', () => {
-  const props = { drives: [], ready: true, saved: [], start: async () => {}, pickFolder: async () => {}, openSaved: async () => {}, clearSaved: async () => {}, restartAsAdmin: async () => {}, setAlwaysElevate: async () => {} };
-  const admin = { supported: true, elevated: false, alwaysElevate: false, declined: false };
+  const props = { drives: [], ready: true, saved: [], start: async () => {}, pickFolder: async () => {}, openSaved: async () => {}, clearSaved: async () => {}, restartAsAdmin: async () => {}, setAlwaysElevate: async () => {}, setContextMenu: async () => {} };
+  const admin = { supported: true, elevated: false, alwaysElevate: false, declined: false, contextMenuEnabled: false };
   type Control = { children?: ReactNode; checked?: boolean; disabled?: boolean; onClick?: () => void; onChange?: (e: { target: { checked: boolean } }) => void };
   function controls(node: ReactNode): ReactElement<Control>[] {
     return Children.toArray(node).flatMap(child => {
@@ -389,6 +402,179 @@ describe('administrator controls', () => {
       const items = controls(HomeScreen({ ...props, admin, ...busy }));
       expect(items.find(c => c.props.children === 'Restart as administrator')!.props.disabled).toBe(true);
       expect(items.find(c => c.type === 'input')!.props.disabled).toBe(true);
+      expect(items.filter(c => c.type === 'input')[1].props.disabled).toBe(true);
     }
+  });
+  it('shows the Explorer checkbox at either elevation and toggles its registry state', () => {
+    const setContextMenu = vi.fn(async (_enabled: boolean) => {});
+    for (const elevated of [false, true]) {
+      for (const enabled of [false, true]) {
+        const screen = HomeScreen({ ...props, admin: { ...admin, elevated, contextMenuEnabled: enabled }, setContextMenu });
+        expect(renderToStaticMarkup(screen)).toContain('Add &quot;Scan with DiskMapper&quot; to Explorer&#x27;s right-click menu');
+        const checkbox = controls(screen).filter(c => c.type === 'input')[1];
+        expect(checkbox.props.checked).toBe(enabled);
+        expect(checkbox.props.disabled).toBe(false);
+        checkbox.props.onChange!({ target: { checked: !enabled } });
+      }
+    }
+    expect(setContextMenu.mock.calls).toEqual([[true], [false], [true], [false]]);
+    expect(renderToStaticMarkup(<HomeScreen {...props} admin={{ ...admin, supported: false }} />)).not.toContain('Explorer');
+  });
+});
+
+describe('Explorer scan requests', () => {
+  const admin = { supported: true, elevated: false, alwaysElevate: false, declined: false, contextMenuEnabled: false };
+  const events = new Map<string, (event: { payload: unknown }) => void>();
+
+  function mountApp(path: string | null = null) {
+    const values: unknown[] = [];
+    const effects: { deps?: React.DependencyList; run: React.EffectCallback; pending: boolean; cleanup?: () => void }[] = [];
+    let slot = 0;
+    let effect = 0;
+    let dirty = true;
+    let screen: ReactNode;
+    vi.mocked(React.useState).mockImplementation((<T,>(initial: T | (() => T)) => {
+      const index = slot++;
+      if (!(index in values)) values[index] = typeof initial === 'function' ? (initial as () => T)() : initial;
+      return [values[index], (next: T | ((value: T) => T)) => {
+        values[index] = typeof next === 'function' ? (next as (value: T) => T)(values[index] as T) : next;
+        dirty = true;
+      }];
+    }) as typeof React.useState);
+    vi.mocked(React.useRef).mockImplementation((<T,>(initial: T) => {
+      const index = slot++;
+      if (!(index in values)) values[index] = { current: initial };
+      return values[index];
+    }) as typeof React.useRef);
+    vi.mocked(React.useEffect).mockImplementation((run, deps) => {
+      const index = effect++;
+      const previous = effects[index];
+      if (!previous || !deps || deps.some((value, i) => !Object.is(value, previous.deps?.[i]))) {
+        previous?.cleanup?.();
+        effects[index] = { run, deps, pending: true };
+      }
+    });
+    vi.stubGlobal('window', { addEventListener: noop, removeEventListener: noop, setTimeout, clearTimeout });
+    vi.stubGlobal('document', { activeElement: null });
+    vi.stubGlobal('HTMLElement', class {});
+    events.clear();
+    vi.mocked(listen).mockImplementation(async (type, handler) => {
+      events.set(type as string, handler as (event: { payload: unknown }) => void);
+      return () => { events.delete(type as string); };
+    });
+    let pending = path;
+    vi.mocked(invoke).mockReset().mockImplementation(async command => {
+      if (command === 'admin_status') return admin;
+      if (command === 'take_launch_path') {
+        const result = pending;
+        pending = null;
+        return result;
+      }
+      if (command === 'start_scan') return 1;
+      if (command === 'get_node_path') return 'D:\\Photos\\Other';
+      return [];
+    });
+    function render() {
+      slot = 0;
+      effect = 0;
+      dirty = false;
+      screen = App();
+      for (const item of effects) {
+        if (!item.pending) continue;
+        item.pending = false;
+        item.cleanup = item.run() || undefined;
+      }
+    }
+    render();
+    return {
+      async settle() {
+        for (let i = 0; i < 40; i++) {
+          await Promise.resolve();
+          if (dirty) render();
+        }
+      },
+      find<T extends React.ElementType>(type: T): ReactElement<ComponentProps<T>> {
+        function find(node: ReactNode): ReactElement<ComponentProps<T>> | undefined {
+          for (const child of Children.toArray(node)) {
+            if (!isValidElement<{ children?: ReactNode }>(child)) continue;
+            if (child.type === type) return child as ReactElement<ComponentProps<T>>;
+            const found = find(child.props.children);
+            if (found) return found;
+          }
+        }
+        const found = find(screen);
+        expect(found).toBeDefined();
+        return found!;
+      },
+      html: () => renderToStaticMarkup(screen),
+      unmount: () => effects.forEach(item => item.cleanup?.()),
+    };
+  }
+  afterEach(async () => {
+    const actual = await vi.importActual<typeof React>('react');
+    vi.mocked(React.useState).mockImplementation(actual.useState);
+    vi.mocked(React.useRef).mockImplementation(actual.useRef);
+    vi.mocked(React.useEffect).mockImplementation(actual.useEffect);
+  });
+
+  it('takes the launch path after all listeners are ready and uses the normal scan flow once', async () => {
+    const app = mountApp('D:\\Photos');
+    expect(invoke).not.toHaveBeenCalledWith('take_launch_path');
+    await app.settle();
+    expect(events.has('scan-requested')).toBe(true);
+    expect(invoke).toHaveBeenCalledWith('start_scan', { path: 'D:\\Photos' });
+    expect(app.find(ScanScreen).props.progress.currentPath).toBe('D:\\Photos');
+    events.get('scan-cancelled')!({ payload: { scanId: 1 } });
+    await app.settle();
+    expect(vi.mocked(invoke).mock.calls.filter(([command]) => command === 'start_scan')).toHaveLength(1);
+    app.find(HomeScreen);
+    app.unmount();
+    expect(events.size).toBe(0);
+  });
+
+  it('starts forwarded paths while home or scanning, and ignores requests during deletion', async () => {
+    const app = mountApp();
+    await app.settle();
+    for (const path of ['D:\\Photos', 'C:\\']) {
+      events.get('scan-requested')!({ payload: path });
+      await app.settle();
+      expect(invoke).toHaveBeenCalledWith('start_scan', { path });
+      expect(app.find(ScanScreen).props.progress.currentPath).toBe(path);
+    }
+    events.get('scan-complete')!({ payload: { scanId: 1, root: current } });
+    await app.settle();
+    await app.find(ResultsScreen).props.action('delete', { ...current, id: 1 });
+    await app.settle();
+    app.find(DeleteDialog);
+    vi.mocked(invoke).mockClear();
+    events.get('scan-requested')!({ payload: 'E:\\' });
+    await app.settle();
+    expect(invoke).not.toHaveBeenCalledWith('start_scan', { path: 'E:\\' });
+    app.unmount();
+  });
+
+  it('reloads registry state after toggles and surfaces errors in the error banner', async () => {
+    const app = mountApp();
+    await app.settle();
+    expect(app.find(HomeScreen).props.admin?.contextMenuEnabled).toBe(false);
+    vi.mocked(invoke).mockImplementation(async command => {
+      if (command === 'set_context_menu') return;
+      if (command === 'admin_status') return { ...admin, contextMenuEnabled: true };
+      return [];
+    });
+    await app.find(HomeScreen).props.setContextMenu(true);
+    await app.settle();
+    expect(invoke).toHaveBeenCalledWith('set_context_menu', { enabled: true });
+    expect(app.find(HomeScreen).props.admin?.contextMenuEnabled).toBe(true);
+    vi.mocked(invoke).mockImplementation(async command => {
+      if (command === 'set_context_menu') throw 'Registry access denied';
+      if (command === 'admin_status') return { ...admin, contextMenuEnabled: true };
+      return [];
+    });
+    await app.find(HomeScreen).props.setContextMenu(false);
+    await app.settle();
+    expect(app.find(HomeScreen).props.admin?.contextMenuEnabled).toBe(true);
+    expect(app.html()).toContain('Registry access denied');
+    app.unmount();
   });
 });

@@ -85,6 +85,10 @@ export default function App() {
   }[]>([]);
   const launching = useRef(false);
   const handler = useRef<(type: string, message: ScanMessage) => void>(() => { });
+  const scanRequested = useRef<(path: string) => void>(() => { });
+  scanRequested.current = path => {
+    if (!deleting && !deletePending.current && !running) void start(path);
+  };
   useEffect(() => {
     let disposed = false;
     invoke<AdminStatus>('admin_status').then(status => {
@@ -147,6 +151,9 @@ export default function App() {
         const stop = await listen('saved-scans-changed', () => void refreshSaved());
         if (disposed) { stop(); return; }
         listeners.push(stop);
+        const stopScan = await listen<string>('scan-requested', e => scanRequested.current(e.payload));
+        if (disposed) { stopScan(); return; }
+        listeners.push(stopScan);
         if (!disposed) setReady(true);
       } catch (e) {
         if (!disposed) setError(`Desktop connection unavailable: ${String(e)}`);
@@ -157,6 +164,16 @@ export default function App() {
       listeners.forEach(stop => stop());
     };
   }, []);
+  useEffect(() => {
+    if (!ready || phase !== 'home') return;
+    let disposed = false;
+    invoke<string | null>('take_launch_path').then(path => {
+      if (!disposed && path) scanRequested.current(path);
+    }).catch(e => {
+      if (!disposed) setError(String(e));
+    });
+    return () => { disposed = true; };
+  }, [ready, phase]);
   useEffect(() => {
     if (phase !== 'home') return;
     let disposed = false;
@@ -297,6 +314,17 @@ export default function App() {
       setAdmin(status => status && { ...status, alwaysElevate: enabled });
     } catch (e) { setError(String(e)); }
     finally { setAdminBusy(false); }
+  }
+  async function setContextMenu(enabled: boolean) {
+    setAdminBusy(true);
+    setError('');
+    try { await invoke('set_context_menu', { enabled }); }
+    catch (e) { setError(String(e)); }
+    finally {
+      try { setAdmin(await invoke<AdminStatus>('admin_status')); }
+      catch (e) { setError(error => error || String(e)); }
+      setAdminBusy(false);
+    }
   }
   async function pickFolder() {
     try {
@@ -522,6 +550,7 @@ export default function App() {
           adminBusy={adminBusy}
           restartAsAdmin={restartAsAdmin}
           setAlwaysElevate={setAlwaysElevate}
+          setContextMenu={setContextMenu}
         />
       )}
       {phase === 'scanning' && (

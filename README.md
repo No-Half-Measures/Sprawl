@@ -14,6 +14,10 @@ Dependencies are already installed. Start the desktop app with `npm run tauri de
 `npm run build` builds the frontend; `npm run tauri build` packages the app.
 A standalone browser preview cannot scan: disk access is provided by the Tauri backend.
 
+Home can add **Scan with DiskMapper** to Explorer's right-click menu for folders,
+folder backgrounds and drives (under **Show more options** on Windows 11).
+It scans the chosen path in the existing window, or opens DiskMapper if needed.
+
 ## Checks
 
 ```text

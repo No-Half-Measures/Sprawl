@@ -14,7 +14,7 @@ DiskMapper shows where disk space goes. You pick a drive or folder, it scans, an
 - Tauri 2 desktop app (Windows first).
 - Backend: Rust. Parallel scanning uses `rayon`, and drive info comes from `sysinfo`.
 - Frontend: React 19 + TypeScript + Vite. The treemap layout comes from `d3-hierarchy` (squarified) and is drawn on a `<canvas>`. Styling is plain CSS with custom properties; there is no UI kit.
-- Plugins: `opener` (reveal in Explorer), `dialog` (folder picker).
+- Plugins: `opener` (reveal in Explorer), `dialog` (folder picker), `single-instance` (forward launches to the existing window).
 
 ## Backend
 
@@ -71,6 +71,7 @@ A calm, clean, dark-first look that also respects the system light theme. There 
 - Each drive gets a card with its letter and label, a used/free bar, the text "412 GB used of 1 TB", and a **Scan** button.
 - A **Scan a folder…** button opens the folder picker.
 - On Windows, an admin row offers **Restart as administrator** (UAC relaunch) when not elevated and an **Always run as administrator** checkbox. The preference lives in `settings.json` in the app's local data directory; when set, startup relaunches elevated and continues unelevated if UAC is declined.
+- **Add "Scan with DiskMapper" to Explorer's right-click menu** registers folders, backgrounds and drives per user, without admin access. The checkbox reads the registry and repairs stale executable paths when enabled. Explorer launches scan in the existing window, ignoring requests during deletion; Windows 11 shows the item under **Show more options**.
 
 ### 2. Scanning
 - While scanning, the screen shows big live counters for files found and size found, a thin current-path line that is truncated in the middle, an indeterminate progress bar (the total isn't known ahead of time), and a **Cancel** button.
