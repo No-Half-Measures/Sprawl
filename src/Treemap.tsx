@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
-import { categoryColor, formatSize, percent, type TreeNode } from './model';
+import { categoryColor, count, formatSize, percent, type TreeNode } from './model';
 import { fitLabel, layoutTree, textColor, wrapLabel, type Tile } from './layout';
 
 interface Props {
@@ -163,7 +163,7 @@ export default function Treemap({ tree, hover, filter, onHover, onOpen, onContex
           <strong>{tip.tile.node.name}</strong>
           <span>{formatSize(tip.tile.node.size)} · {percent(tip.tile.node.size, tree.size)}</span>
           <small>
-            {tip.tile.node.files.toLocaleString()} files · {tip.tile.node.folders.toLocaleString()} folders
+            {count(tip.tile.node.files, 'file')} · {count(tip.tile.node.folders, 'folder')}
           </small>
           {tip.tile.node.id === null && (
             <small>Zoom into the containing folder for more detail.</small>

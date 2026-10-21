@@ -1,4 +1,4 @@
-import { formatSize, middlePath, type Progress } from './model';
+import { count, formatSize, middlePath, type Progress } from './model';
 
 interface Props {
   progress: Progress;
@@ -27,7 +27,7 @@ export default function ScanScreen({
       <div className="scan-counters">
         <div>
           <strong>{progress.files.toLocaleString()}</strong>
-          <span>files found</span>
+          <span>{progress.files === 1 ? 'file' : 'files'} found</span>
         </div>
         <div>
           <strong>{formatSize(progress.bytes)}</strong>
@@ -44,8 +44,8 @@ export default function ScanScreen({
         {middlePath(progress.currentPath, 90)}
       </p>
       <div className="scan-meta">
-        {progress.folders.toLocaleString()} folders
-        {progress.errors > 0 && ` · ${progress.errors.toLocaleString()} unreadable items`}
+        {count(progress.folders, 'folder')}
+        {progress.errors > 0 && ` · ${count(progress.errors, 'unreadable item')}`}
       </div>
       <button
         disabled={cancelling}

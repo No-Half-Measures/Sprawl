@@ -3,6 +3,7 @@ import Treemap from './Treemap';
 import {
   categories,
   categoryColor,
+  count,
   formatAge,
   formatDelta,
   formatScanDate,
@@ -115,7 +116,7 @@ export default function ResultsScreen({
   const used = Math.max(0, total - free);
   const notFound = drive ? notFoundByScan(total, free, current.size + recycled) : null;
   const notFoundText = (skipped > 0
-    ? `Includes ${skipped.toLocaleString()} items that couldn't be read, plus system files and file-system overhead.`
+    ? `Includes ${count(skipped, 'item')} that couldn't be read, plus system files and file-system overhead.`
     : "System files, restore points, and file-system overhead the scan can't see.")
     + (elevated === false ? ' Run as administrator to include more.' : '');
   const previousSizes = new Map(changes?.children.map(n => [n.id, n.previousSize]));
@@ -169,8 +170,8 @@ export default function ResultsScreen({
               <span title="Total size of files the scan could read. Used also counts unreadable items and file-system overhead.">Scanned <strong>{formatSize(current.size)}</strong></span>
             ) : <strong>{formatSize(current.size)}</strong>}
             {drive && recycled > 0 && <span title="Moved from this snapshot. Space is freed when you empty the Recycle Bin.">· {formatSize(recycled)} in Recycle Bin</span>}
-            <span>{current.files.toLocaleString()} files</span>
-            <span>{current.folders.toLocaleString()} folders</span>
+            <span>{count(current.files, 'file')}</span>
+            <span>{count(current.folders, 'folder')}</span>
             {changes && (
               <span>{changes.previousSize === null ? 'New' : current.size === changes.previousSize ? 'No change' : formatDelta(current.size - changes.previousSize)} since {since}</span>
             )}
@@ -193,7 +194,7 @@ export default function ResultsScreen({
           className="skipped"
           role="status"
         >
-          {skipped.toLocaleString()} items couldn’t be read — run as administrator to include them.
+          {count(skipped, 'item')} couldn’t be read — run as administrator to include them.
         </div>
       )}
       <div
@@ -286,11 +287,11 @@ export default function ResultsScreen({
                   <span className="row-data">
                     <span
                       title={n.kind === 'dir' || n.id === null
-                        ? `${n.files.toLocaleString()} files`
+                        ? count(n.files, 'file')
                         : categories.find(c => c.id === n.category)?.label}
                     >
                       {n.kind === 'dir' || n.id === null
-                        ? `${n.files.toLocaleString()} files`
+                        ? count(n.files, 'file')
                         : categories.find(c => c.id === n.category)?.label}
                     </span>
                     <strong className="row-size">
@@ -317,7 +318,7 @@ export default function ResultsScreen({
               )}
               {!loading && changes && changes.removed.items > 0 && (
                 <div className="content-row summary-row">
-                  <span>{changes.removed.items.toLocaleString()} removed items</span>
+                  <span>{count(changes.removed.items, 'removed item')}</span>
                   <strong className="delta shrink">−{formatSize(changes.removed.bytes)}</strong>
                 </div>
               )}
@@ -432,7 +433,7 @@ export default function ResultsScreen({
             <button
               key={b.category}
               aria-label={`${categories.find(c => c.id === b.category)?.label}: ${formatSize(b.bytes)}`}
-              title={`${formatSize(b.bytes)} · ${b.files.toLocaleString()} files`}
+              title={`${formatSize(b.bytes)} · ${count(b.files, 'file')}`}
               style={{
                 width: `${current.size ? b.bytes / current.size * 100 : 0}%`,
                 background: categoryColor(b.category),
@@ -456,7 +457,7 @@ export default function ResultsScreen({
                 onFocus={() => setFilter(b.category)}
                 onBlur={() => setFilter(null)}
                 style={{ opacity: filter && filter !== b.category ? .4 : 1 }}
-                title={`${formatSize(b.bytes)} · ${b.files.toLocaleString()} files`}
+                title={`${formatSize(b.bytes)} · ${count(b.files, 'file')}`}
               >
                 <i style={{ background: categoryColor(b.category) }} />
                 {c?.label ?? b.category}

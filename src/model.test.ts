@@ -1,8 +1,19 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { categories, categoryFor, formatAge, formatDelta, formatScanDate, formatSize, isDriveRoot, notFoundByScan, percent, refreshTrails, staleness, type SavedScan, type TreeNode } from './model';
+import { categories, categoryFor, count, formatAge, formatDelta, formatScanDate, formatSize, isDriveRoot, notFoundByScan, percent, refreshTrails, staleness, type SavedScan, type TreeNode } from './model';
 import { fitLabel, layoutTree, textColor, wrapLabel } from './layout';
 
 afterEach(() => vi.useRealTimers());
+
+describe('count labels', () => {
+  it('uses singular only for one and formats numbers with the locale', () => {
+    for (const noun of ['file', 'folder', 'item', 'removed item', 'unreadable item']) {
+      expect(count(0, noun)).toBe(`0 ${noun}s`);
+      expect(count(1, noun)).toBe(`1 ${noun}`);
+      expect(count(2, noun)).toBe(`2 ${noun}s`);
+      expect(count(1234, noun)).toBe(`${(1234).toLocaleString()} ${noun}s`);
+    }
+  });
+});
 
 describe('saved scan dates and freshness', () => {
   const now = new Date(2026, 9, 20, 15, 0).getTime();

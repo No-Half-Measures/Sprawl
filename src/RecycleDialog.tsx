@@ -1,5 +1,5 @@
 import { useRef } from 'react';
-import { formatSize, type TreeNode } from './model';
+import { count, formatSize, type TreeNode } from './model';
 
 export default function RecycleDialog({ node, path, moving, cancel, confirm }: {
   node: TreeNode; path: string; moving: boolean; cancel: () => void; confirm: () => void;
@@ -26,7 +26,7 @@ export default function RecycleDialog({ node, path, moving, cancel, confirm }: {
         <div id="recycle-details">
           <strong>{node.name}</strong>
           <p className="recycle-path">{path}</p>
-          <p>{formatSize(node.size)}{node.kind === 'dir' && ` · ${node.files.toLocaleString()} files · ${node.folders.toLocaleString()} folders`}</p>
+          <p>{formatSize(node.size)}{node.kind === 'dir' && ` · ${count(node.files, 'file')} · ${count(node.folders, 'folder')}`}</p>
         </div>
         <p id="recycle-note">You can restore it from the Recycle Bin. The space is freed when you empty the Recycle Bin.</p>
         <div className="dialog-actions">

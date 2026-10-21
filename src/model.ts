@@ -10,6 +10,7 @@ export interface AdminStatus { supported: boolean; elevated: boolean; alwaysElev
 export interface SavedScan { version: number; path: string; scannedAt: number; size: number; files: number; folders: number; recycled?: number; errors: number; driveFree: number | null; driveTotal: number | null }
 export interface Progress { files: number; folders: number; bytes: number; errors: number; currentPath: string }
 export const emptyProgress: Progress = { files: 0, folders: 0, bytes: 0, errors: 0, currentPath: '' };
+export function count(n: number, noun: string): string { return `${n.toLocaleString()} ${noun}${n === 1 ? '' : 's'}`; }
 export function refreshTrails(trail: TreeNode[], history: TreeNode[][], ids: number[], nodes: (TreeNode | null)[]): { trail: TreeNode[]; history: TreeNode[][] } {
   const refreshed = new Map(ids.map((id, i) => [id, nodes[i]]));
   const attached = (node: TreeNode) => node.id !== null && refreshed.get(node.id) != null;

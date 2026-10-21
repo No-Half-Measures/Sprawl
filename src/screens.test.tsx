@@ -4,6 +4,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import HomeScreen from './HomeScreen';
 import ResultsScreen, { SnapshotBanner } from './ResultsScreen';
 import RecycleDialog from './RecycleDialog';
+import ScanScreen from './ScanScreen';
 import { categories, formatSize, percent, type SavedScan, type TreeNode } from './model';
 
 const current: TreeNode = { id: 0, name: 'Other', kind: 'dir', size: 10000, files: 2, folders: 1, category: 'apps' };
@@ -20,7 +21,7 @@ describe('recycle confirmation', () => {
     expect(html).toContain('Move to Recycle Bin?');
     expect(html).toContain('Other');
     expect(html).toContain('E:\\Projects\\Other');
-    expect(html).toContain('9.8 KB · 2 files · 1 folders');
+    expect(html).toContain('9.8 KB · 2 files · 1 folder');
     expect(html).toContain('You can restore it from the Recycle Bin. The space is freed when you empty the Recycle Bin.');
     expect(html).toMatch(/<button autofocus="">Cancel<\/button>/);
     expect(html.match(/autofocus/g)).toHaveLength(1);
@@ -31,7 +32,19 @@ describe('recycle confirmation', () => {
     expect(html.match(/disabled=""/g)).toHaveLength(2);
     expect(html).toContain('Moving…');
     expect(html).not.toContain('2 files');
-    expect(html).not.toContain('1 folders');
+    expect(html).not.toContain('1 folder');
+  });
+});
+
+describe('scan counts', () => {
+  it('uses singular at one and plural at zero and two', () => {
+    for (const n of [0, 1, 2]) {
+      const html = renderToStaticMarkup(<ScanScreen progress={{ files: n, folders: n, errors: n, bytes: 0, currentPath: '' }} cancelling={false} cancel={async () => {}} />);
+      expect(html).toContain(`<strong>${n}</strong><span>${n === 1 ? 'file' : 'files'} found</span>`);
+      expect(html).toContain(`${n} ${n === 1 ? 'folder' : 'folders'}`);
+      if (n > 0) expect(html).toContain(`${n} unreadable ${n === 1 ? 'item' : 'items'}`);
+      else expect(html).not.toContain('unreadable');
+    }
   });
 });
 
@@ -49,6 +62,15 @@ describe('screen details', () => {
     children: [{ id: 1, previousSize: gb }, { id: 2, previousSize: 2 * gb }, { id: 3, previousSize: null }, { id: 4, previousSize: 0 }],
     removed: { items: 2, bytes: gb }, grown: [],
   };
+  it('uses singular labels for one file, folder, removed item and skipped item', () => {
+    const drive = { mount: 'C:\\', label: 'Disk', total: 100 * gb, free: 60 * gb };
+    const html = renderToStaticMarkup(<ResultsScreen {...props} current={{ ...props.current, files: 1 }} drive={drive} skipped={1} changes={{ ...changes, removed: { items: 1, bytes: gb } }} />);
+    expect(html).toContain('<span>1 file</span>');
+    expect(html).toContain('<span>1 folder</span>');
+    expect(html).toContain('<span>1 removed item</span>');
+    expect(html).toContain('1 item couldn’t be read');
+    expect(html).toContain('Includes 1 item that couldn&#x27;t be read');
+  });
   it('keeps recycled bytes out of Not found and shows them only at the drive root', () => {
     const drive = { mount: 'C:\\', label: 'Disk', total: 100 * gb, free: 60 * gb };
     const html = renderToStaticMarkup(<ResultsScreen {...props} drive={drive} recycled={20 * gb} />);
@@ -137,6 +159,8 @@ describe('screen details', () => {
     expect(html).not.toContain('Scanned');
     expect(html).toContain('Apps &amp; games');
     expect(html).toContain('Code &amp; build');
+    expect(html).toContain('title="1 file">1 file</span>');
+    expect(html).toContain('title="1 B · 1 file"');
     expect(html).toContain('1 B · &lt;0.1%');
     expect(html).not.toContain('>Video');
     expect(html).not.toContain('>Images');
