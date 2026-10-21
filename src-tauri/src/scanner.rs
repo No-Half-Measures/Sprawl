@@ -1,4 +1,3 @@
-use rayon::prelude::*;
 use serde::{Deserialize, Serialize};
 use std::{
     cmp::Reverse,
@@ -27,17 +26,28 @@ pub fn categories() -> &'static [Category] {
     })
 }
 
-pub fn category(name: &str) -> String {
+pub fn category(name: &str) -> u8 {
+    static EXTENSIONS: OnceLock<Vec<(&str, u8)>> = OnceLock::new();
+    let extensions = EXTENSIONS.get_or_init(|| {
+        let mut extensions: Vec<_> = categories()
+            .iter()
+            .enumerate()
+            .flat_map(|(index, c)| c.extensions.iter().map(move |e| (e.as_str(), index as u8)))
+            .collect();
+        extensions.sort_unstable_by_key(|(extension, _)| *extension);
+        extensions
+    });
     let extension = Path::new(name)
         .extension()
-        .unwrap_or_default()
-        .to_string_lossy()
-        .to_ascii_lowercase();
-    categories()
-        .iter()
-        .find(|c| c.extensions.contains(&extension))
-        .map_or("other", |c| c.id.as_str())
-        .into()
+        .and_then(|e| e.to_str())
+        .unwrap_or_default();
+    extensions
+        .binary_search_by(|(candidate, _)| {
+            candidate
+                .bytes()
+                .cmp(extension.bytes().map(|b| b.to_ascii_lowercase()))
+        })
+        .map_or((CATEGORY_COUNT - 1) as u8, |i| extensions[i].1)
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Debug)]
@@ -57,7 +67,7 @@ pub struct Node {
     pub size: u64,
     pub files: u64,
     pub folders: u64,
-    pub category: Option<String>,
+    pub category: Option<u8>,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -86,6 +96,20 @@ struct Counters {
 }
 
 impl Counters {
+    fn flush(&self, counts: &mut Progress, path: &Path, report: &impl Fn(Progress)) {
+        for (counter, count) in [
+            (&self.files, counts.files),
+            (&self.folders, counts.folders),
+            (&self.bytes, counts.bytes),
+            (&self.errors, counts.errors),
+        ] {
+            if count > 0 {
+                counter.fetch_add(count, Ordering::Relaxed);
+            }
+        }
+        *counts = Progress::default();
+        self.report(path, report);
+    }
     fn snapshot(&self, path: &Path) -> Progress {
         Progress {
             files: self.files.load(Ordering::Relaxed),
@@ -103,6 +127,111 @@ impl Counters {
             report(self.snapshot(path));
         }
     }
+}
+
+fn scan_directory<'scope>(
+    scope: &rayon::Scope<'scope>,
+    nodes: &'scope Mutex<Vec<Node>>,
+    counters: &'scope Counters,
+    cancel: &'scope AtomicBool,
+    report: &'scope (impl Fn(Progress) + Sync),
+    parent: usize,
+    directory: PathBuf,
+) {
+    if cancel.load(Ordering::Relaxed) {
+        return;
+    }
+    let mut entries = Vec::new();
+    let mut counts = Progress::default();
+    let flush = |entries: &mut Vec<Node>, counts: &mut Progress| {
+        counters.flush(counts, &directory, report);
+        if cancel.load(Ordering::Relaxed) || entries.is_empty() {
+            return;
+        }
+        let directories: Vec<_> = entries
+            .iter()
+            .enumerate()
+            .filter(|(_, node)| node.kind == Kind::Dir)
+            .map(|(offset, node)| (offset, directory.join(&node.name)))
+            .collect();
+        let start = {
+            let mut nodes = nodes.lock().unwrap();
+            let start = nodes.len();
+            nodes[parent].children.extend(start..start + entries.len());
+            nodes.append(entries);
+            start
+        };
+        for (offset, path) in directories {
+            if cancel.load(Ordering::Relaxed) {
+                return;
+            }
+            scope.spawn(move |scope| {
+                scan_directory(scope, nodes, counters, cancel, report, start + offset, path)
+            });
+        }
+    };
+    match fs::read_dir(&directory) {
+        Ok(reader) => {
+            for (index, entry) in reader.enumerate() {
+                if cancel.load(Ordering::Relaxed) {
+                    return;
+                }
+                if index > 0 && index % 1024 == 0 {
+                    flush(&mut entries, &mut counts);
+                }
+                let entry = match entry {
+                    Ok(e) => e,
+                    Err(_) => {
+                        counts.errors += 1;
+                        continue;
+                    }
+                };
+                #[cfg(windows)]
+                let metadata = entry.metadata();
+                #[cfg(not(windows))]
+                let metadata = fs::symlink_metadata(entry.path());
+                let metadata = match metadata {
+                    Ok(m) => m,
+                    Err(_) => {
+                        counts.errors += 1;
+                        continue;
+                    }
+                };
+                if excluded(&metadata) {
+                    continue;
+                }
+                let kind = if metadata.is_dir() {
+                    Kind::Dir
+                } else if metadata.is_file() {
+                    Kind::File
+                } else {
+                    continue;
+                };
+                let size = if kind == Kind::File {
+                    counts.files += 1;
+                    counts.bytes += metadata.len();
+                    metadata.len()
+                } else {
+                    counts.folders += 1;
+                    0
+                };
+                let name = entry.file_name().to_string_lossy().into_owned();
+                let category = (kind == Kind::File).then(|| category(&name));
+                entries.push(Node {
+                    name,
+                    parent: Some(parent),
+                    children: vec![],
+                    kind,
+                    size,
+                    files: u64::from(kind == Kind::File),
+                    folders: 0,
+                    category,
+                });
+            }
+        }
+        Err(_) => counts.errors += 1,
+    }
+    flush(&mut entries, &mut counts);
 }
 
 fn excluded(metadata: &fs::Metadata) -> bool {
@@ -172,102 +301,13 @@ pub fn scan(
         root_path: root_path.clone(),
         errors: 0,
     };
-    let mut frontier = vec![(0, root_path)];
-    while !frontier.is_empty() {
-        if cancel.load(Ordering::Relaxed) {
-            return Ok(None);
-        }
-        // Bound temporary directory listings even when a level contains millions of folders.
-        let batch_len = frontier.len().min(256);
-        let batch = frontier.split_off(frontier.len() - batch_len);
-        let listings: Vec<_> = batch
-            .par_iter()
-            .map(|(parent, directory)| {
-                let mut entries = Vec::new();
-                match fs::read_dir(directory) {
-                    Ok(reader) => {
-                        for entry in reader {
-                            if cancel.load(Ordering::Relaxed) {
-                                break;
-                            }
-                            let entry = match entry {
-                                Ok(e) => e,
-                                Err(_) => {
-                                    counters.errors.fetch_add(1, Ordering::Relaxed);
-                                    continue;
-                                }
-                            };
-                            #[cfg(windows)]
-                            let metadata = entry.metadata();
-                            #[cfg(not(windows))]
-                            let metadata = fs::symlink_metadata(entry.path());
-                            let metadata = match metadata {
-                                Ok(m) => m,
-                                Err(_) => {
-                                    counters.errors.fetch_add(1, Ordering::Relaxed);
-                                    continue;
-                                }
-                            };
-                            if excluded(&metadata) {
-                                continue;
-                            }
-                            let kind = if metadata.is_dir() {
-                                Kind::Dir
-                            } else if metadata.is_file() {
-                                Kind::File
-                            } else {
-                                continue;
-                            };
-                            let size = if kind == Kind::File {
-                                metadata.len()
-                            } else {
-                                0
-                            };
-                            if kind == Kind::File {
-                                counters.files.fetch_add(1, Ordering::Relaxed);
-                                counters.bytes.fetch_add(size, Ordering::Relaxed);
-                            } else {
-                                counters.folders.fetch_add(1, Ordering::Relaxed);
-                            }
-                            counters.report(directory, &report);
-                            entries.push((
-                                entry.file_name().to_string_lossy().into_owned(),
-                                kind,
-                                size,
-                            ));
-                        }
-                    }
-                    Err(_) => {
-                        counters.errors.fetch_add(1, Ordering::Relaxed);
-                    }
-                }
-                counters.report(directory, &report);
-                (*parent, directory, entries)
-            })
-            .collect();
-        for (parent, directory, entries) in listings {
-            for (name, kind, size) in entries {
-                if cancel.load(Ordering::Relaxed) {
-                    return Ok(None);
-                }
-                let id = tree.nodes.len();
-                if kind == Kind::Dir {
-                    frontier.push((id, directory.join(&name)));
-                }
-                let cat = (kind == Kind::File).then(|| category(&name));
-                tree.nodes.push(Node {
-                    name,
-                    parent: Some(parent),
-                    children: vec![],
-                    kind,
-                    size,
-                    files: u64::from(kind == Kind::File),
-                    folders: 0,
-                    category: cat,
-                });
-                tree.nodes[parent].children.push(id);
-            }
-        }
+    let nodes = Mutex::new(std::mem::take(&mut tree.nodes));
+    rayon::scope(|scope| {
+        scan_directory(scope, &nodes, &counters, cancel, &report, 0, root_path);
+    });
+    tree.nodes = nodes.into_inner().unwrap();
+    if cancel.load(Ordering::Relaxed) {
+        return Ok(None);
     }
     let mut category_bytes = vec![[0_u64; CATEGORY_COUNT]; tree.nodes.len()];
     for id in (0..tree.nodes.len()).rev() {
@@ -275,24 +315,15 @@ pub fn scan(
             return Ok(None);
         }
         if tree.nodes[id].kind == Kind::File {
-            if let Some(index) = categories()
-                .iter()
-                .position(|c| Some(&c.id) == tree.nodes[id].category.as_ref())
-            {
-                category_bytes[id][index] = tree.nodes[id].size;
+            if let Some(index) = tree.nodes[id].category {
+                category_bytes[id][usize::from(index)] = tree.nodes[id].size;
             }
         } else {
-            let dominant = category_bytes[id]
+            tree.nodes[id].category = category_bytes[id]
                 .iter()
                 .enumerate()
                 .max_by_key(|(_, bytes)| *bytes)
-                .map(|(index, _)| index);
-            tree.nodes[id].category = Some(
-                dominant
-                    .and_then(|index| categories().get(index))
-                    .map_or("other", |c| c.id.as_str())
-                    .into(),
-            );
+                .map(|(index, _)| index as u8);
         }
         if let Some(parent) = tree.nodes[id].parent {
             let (size, files, folders) = (
@@ -317,6 +348,9 @@ pub fn scan(
         tree.nodes[id].children = children;
     }
     drop(category_bytes);
+    if cancel.load(Ordering::Relaxed) {
+        return Ok(None);
+    }
     tree.errors = counters.errors.load(Ordering::Relaxed);
     report(counters.snapshot(path));
     Ok(Some(tree))
@@ -425,7 +459,9 @@ impl Tree {
             size: node.size,
             files: node.files,
             folders: node.folders,
-            category: node.category.clone(),
+            category: node
+                .category
+                .map(|index| categories()[usize::from(index)].id.clone()),
             children,
         }
     }
@@ -441,30 +477,44 @@ impl Tree {
     }
     pub fn largest(&self, id: usize, limit: usize) -> Result<Vec<LargeFile>, String> {
         let limit = limit.min(1000);
-        let mut heap = BinaryHeap::new();
-        self.visit(id, |i, n| {
-            if n.kind == Kind::File && limit > 0 {
-                heap.push(Reverse((n.size, i)));
-                if heap.len() > limit {
-                    heap.pop();
-                }
-            }
-        })?;
+        let mut heap: BinaryHeap<(Reverse<u64>, String, usize)> = BinaryHeap::new();
         let base = self.path(id)?;
-        let mut result = vec![];
-        for Reverse((size, i)) in heap {
+        let mut stack = vec![id];
+        while let Some(i) = stack.pop() {
             let n = &self.nodes[i];
-            result.push(LargeFile {
-                id: i,
-                name: n.name.clone(),
-                relative_path: self
+            stack.extend(&n.children);
+            if n.kind == Kind::File
+                && limit > 0
+                && heap
+                    .peek()
+                    .is_none_or(|(Reverse(size), _, _)| heap.len() < limit || n.size >= *size)
+            {
+                let relative_path = self
                     .path(i)?
                     .strip_prefix(&base)
                     .unwrap_or(Path::new(&n.name))
                     .to_string_lossy()
-                    .into_owned(),
+                    .into_owned();
+                heap.push((Reverse(n.size), relative_path, i));
+                if heap.len() > limit {
+                    heap.pop();
+                }
+            }
+        }
+        let mut result = vec![];
+        for (Reverse(size), relative_path, i) in heap {
+            let n = &self.nodes[i];
+            result.push(LargeFile {
+                id: i,
+                name: n.name.clone(),
+                relative_path,
                 size,
-                category: n.category.clone().unwrap_or_else(|| "other".into()),
+                category: n
+                    .category
+                    .map_or("other", |index| {
+                        categories()[usize::from(index)].id.as_str()
+                    })
+                    .into(),
             });
         }
         result.sort_unstable_by(|a, b| {
@@ -485,13 +535,63 @@ impl Tree {
             .collect();
         self.visit(id, |_, n| {
             if n.kind == Kind::File
-                && let Some(c) = &n.category
-                && let Some(row) = result.iter_mut().find(|r| &r.category == c)
+                && let Some(index) = n.category
+                && let Some(row) = result.get_mut(usize::from(index))
             {
                 row.bytes += n.size;
                 row.files += 1;
             }
         })?;
         Ok(result)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn progress_can_cancel_a_large_directory_before_assembly() {
+        let dir = tempfile::tempdir().unwrap();
+        for i in 0..1100 {
+            fs::write(dir.path().join(format!("file{i}")), [0; 3]).unwrap();
+        }
+        let nodes = Mutex::new(vec![Node {
+            name: "root".into(),
+            parent: None,
+            children: vec![],
+            kind: Kind::Dir,
+            size: 0,
+            files: 0,
+            folders: 0,
+            category: None,
+        }]);
+        let counters = Counters {
+            files: AtomicU64::new(0),
+            folders: AtomicU64::new(0),
+            bytes: AtomicU64::new(0),
+            errors: AtomicU64::new(0),
+            last: Mutex::new(Instant::now() - Duration::from_millis(100)),
+        };
+        let cancel = AtomicBool::new(false);
+        let report = |progress: Progress| {
+            assert_eq!((progress.files, progress.bytes), (1024, 3072));
+            assert_eq!(progress.current_path, dir.path().to_string_lossy());
+            cancel.store(true, Ordering::Relaxed);
+        };
+        rayon::scope(|scope| {
+            scan_directory(
+                scope,
+                &nodes,
+                &counters,
+                &cancel,
+                &report,
+                0,
+                dir.path().into(),
+            );
+        });
+        assert!(cancel.load(Ordering::Relaxed));
+        assert_eq!(counters.files.load(Ordering::Relaxed), 1024);
+        assert_eq!(nodes.into_inner().unwrap().len(), 1);
     }
 }

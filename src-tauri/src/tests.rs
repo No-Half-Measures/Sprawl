@@ -439,7 +439,10 @@ fn largest_and_breakdown_are_scoped() {
             .bytes,
         40
     );
-    assert_eq!(scanner::category("unknown.ext"), "other");
+    assert_eq!(
+        scanner::categories()[usize::from(scanner::category("unknown.ext"))].id,
+        "other"
+    );
 }
 
 #[test]
@@ -465,9 +468,12 @@ fn dominant_folder_category_uses_all_descendant_bytes() {
         .copied()
         .find(|id| tree.nodes[*id].name == "empty")
         .unwrap();
-    assert_eq!(tree.nodes[mixed].category.as_deref(), Some("code"));
-    assert_eq!(tree.nodes[0].category.as_deref(), Some("apps"));
-    assert_eq!(tree.nodes[empty].category.as_deref(), Some("other"));
+    assert_eq!(
+        tree.nodes[mixed].category,
+        Some(scanner::category("file.rs"))
+    );
+    assert_eq!(tree.nodes[0].category, Some(scanner::category("file.exe")));
+    assert_eq!(tree.nodes[empty].category, Some(scanner::category("file")));
     assert_eq!(
         tree.view(mixed, 0, 100).unwrap().category.as_deref(),
         Some("code")
@@ -501,7 +507,11 @@ fn shared_category_mapping_includes_build_game_and_disk_assets() {
         for extension in &category.extensions {
             assert!(extensions.insert(extension));
             assert_eq!(
-                scanner::category(&format!("file.{}", extension.to_uppercase())),
+                scanner::categories()[usize::from(scanner::category(&format!(
+                    "file.{}",
+                    extension.to_uppercase()
+                )))]
+                .id,
                 category.id
             );
         }
@@ -512,7 +522,10 @@ fn shared_category_mapping_includes_build_game_and_disk_assets() {
         ("mod.pbo", "apps"),
         ("disk.vhdx", "archives"),
     ] {
-        assert_eq!(scanner::category(name), expected);
+        assert_eq!(
+            scanner::categories()[usize::from(scanner::category(name))].id,
+            expected
+        );
     }
 }
 
@@ -525,6 +538,123 @@ fn cancelled_and_invalid_scan() {
             .is_none()
     );
     assert!(scanner::scan(&dir.path().join("missing"), &AtomicBool::new(false), |_| {}).is_err());
+}
+
+#[test]
+fn traversal_is_independent_of_worker_count() {
+    let dir = tempfile::tempdir().unwrap();
+    for i in 0..1100 {
+        fs::write(dir.path().join(format!("file{i:04}.TxT")), [0; 3]).unwrap();
+    }
+    for i in 0..32 {
+        let nested = dir.path().join(format!("folder{i:02}"));
+        fs::create_dir(&nested).unwrap();
+        fs::write(nested.join("equal.MP4"), [0; 3]).unwrap();
+        fs::write(nested.join("equal.txt"), [0; 3]).unwrap();
+    }
+    fn without_ids(value: &mut serde_json::Value) {
+        match value {
+            serde_json::Value::Object(object) => {
+                object.remove("id");
+                for value in object.values_mut() {
+                    without_ids(value);
+                }
+            }
+            serde_json::Value::Array(values) => values.iter_mut().for_each(without_ids),
+            _ => (),
+        }
+    }
+    let mut expected = None;
+    for workers in [1, 2, 4] {
+        let pool = rayon::ThreadPoolBuilder::new()
+            .num_threads(workers)
+            .build()
+            .unwrap();
+        let progress = std::sync::Mutex::new(scanner::Progress::default());
+        let tree = pool.install(|| {
+            scanner::scan(dir.path(), &AtomicBool::new(false), |p| {
+                *progress.lock().unwrap() = p;
+            })
+            .unwrap()
+            .unwrap()
+        });
+        let root = &tree.nodes[0];
+        assert_eq!(
+            (root.size, root.files, root.folders, tree.errors),
+            (3492, 1164, 32, 0)
+        );
+        let progress = progress.into_inner().unwrap();
+        assert_eq!(
+            (
+                progress.bytes,
+                progress.files,
+                progress.folders,
+                progress.errors
+            ),
+            (3492, 1164, 32, 0)
+        );
+        assert_eq!(progress.current_path, dir.path().to_string_lossy());
+        for (id, node) in tree.nodes.iter().enumerate() {
+            if let Some(parent) = node.parent {
+                assert!(parent < id);
+                assert!(tree.nodes[parent].children.contains(&id));
+            }
+            assert!(node.children.windows(2).all(|pair| {
+                let a = &tree.nodes[pair[0]];
+                let b = &tree.nodes[pair[1]];
+                a.size > b.size || (a.size == b.size && a.name <= b.name)
+            }));
+        }
+        let largest = tree.largest(0, 50).unwrap();
+        assert_eq!(largest.first().unwrap().relative_path, "file0000.TxT");
+        assert_eq!(largest.last().unwrap().relative_path, "file0049.TxT");
+        assert_eq!(largest[0].category, "documents");
+        let mut actual = serde_json::json!({
+            "view": tree.view(0, 3, 500).unwrap(),
+            "largest": largest,
+            "breakdown": tree.breakdown(0).unwrap(),
+        });
+        without_ids(&mut actual);
+        if let Some(expected) = &expected {
+            assert_eq!(&actual, expected);
+        } else {
+            expected = Some(actual);
+        }
+    }
+}
+
+#[test]
+fn deep_directory_chain_on_one_worker() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut path = dir.path().to_owned();
+    for _ in 0..96 {
+        path.push("d");
+        fs::create_dir(&path).unwrap();
+    }
+    fs::write(path.join("leaf.rs"), [0; 7]).unwrap();
+    let tree = rayon::ThreadPoolBuilder::new()
+        .num_threads(1)
+        .build()
+        .unwrap()
+        .install(|| {
+            scanner::scan(dir.path(), &AtomicBool::new(false), |_| {})
+                .unwrap()
+                .unwrap()
+        });
+    assert_eq!(
+        (
+            tree.nodes[0].size,
+            tree.nodes[0].files,
+            tree.nodes[0].folders
+        ),
+        (7, 1, 96)
+    );
+    assert_eq!(
+        tree.path(tree.nodes.len() - 1).unwrap(),
+        tree.root_path
+            .join(path.strip_prefix(dir.path()).unwrap())
+            .join("leaf.rs")
+    );
 }
 
 #[test]
@@ -602,7 +732,7 @@ fn total_response_budget_preserves_each_folders_size() {
                 size: 1,
                 files: 1,
                 folders: 0,
-                category: Some("other".into()),
+                category: Some(scanner::category("file")),
             });
         }
     }

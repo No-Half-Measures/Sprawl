@@ -130,17 +130,12 @@ pub fn save(dir: &Path, tree: &Tree, meta: &SavedScan) -> io::Result<()> {
     )
     .map_err(io::Error::other)?;
     for node in &tree.nodes {
-        let category = node
+        if node
             .category
-            .as_ref()
-            .map(|category| {
-                categories()
-                    .iter()
-                    .position(|c| &c.id == category)
-                    .and_then(|index| u8::try_from(index).ok())
-                    .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, OPEN_ERROR))
-            })
-            .transpose()?;
+            .is_some_and(|index| usize::from(index) >= categories().len())
+        {
+            return Err(io::Error::new(io::ErrorKind::InvalidData, OPEN_ERROR));
+        }
         bincode::serde::encode_into_std_write(
             DiskNode {
                 name: Cow::Borrowed(&node.name),
@@ -150,7 +145,7 @@ pub fn save(dir: &Path, tree: &Tree, meta: &SavedScan) -> io::Result<()> {
                 size: node.size,
                 files: node.files,
                 folders: node.folders,
-                category,
+                category: node.category,
             },
             &mut writer,
             bincode::config::standard(),
@@ -225,15 +220,12 @@ fn decode(mut bytes: &[u8]) -> Result<Tree, bincode::error::DecodeError> {
     let mut nodes = Vec::with_capacity(count);
     for _ in 0..count {
         let node: DiskNode = read(&mut bytes)?;
-        let category = node
+        if node
             .category
-            .map(|index| {
-                categories()
-                    .get(usize::from(index))
-                    .map(|c| c.id.clone())
-                    .ok_or(bincode::error::DecodeError::Other(OPEN_ERROR))
-            })
-            .transpose()?;
+            .is_some_and(|index| usize::from(index) >= categories().len())
+        {
+            return Err(bincode::error::DecodeError::Other(OPEN_ERROR));
+        }
         nodes.push(Node {
             name: node.name.into_owned(),
             parent: node.parent,
@@ -242,7 +234,7 @@ fn decode(mut bytes: &[u8]) -> Result<Tree, bincode::error::DecodeError> {
             size: node.size,
             files: node.files,
             folders: node.folders,
-            category,
+            category: node.category,
         });
     }
     if !bytes.is_empty() {
@@ -321,7 +313,7 @@ mod benchmarks {
                 size: if directory { 0 } else { random % 100_000_000 },
                 files: u64::from(!directory),
                 folders: 0,
-                category: Some(categories()[id % categories().len()].id.clone()),
+                category: Some((id % categories().len()) as u8),
             });
             if let Some(parent) = parent {
                 tree.nodes[parent].children.push(id);
