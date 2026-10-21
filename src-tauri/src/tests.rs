@@ -27,6 +27,7 @@ fn saved(tree: &Tree, scanned_at: u64) -> SavedScan {
         size: root.size,
         files: root.files,
         folders: root.folders,
+        recycled: 0,
         errors: tree.errors,
         drive_free: Some(100),
         drive_total: Some(1000),
@@ -179,6 +180,185 @@ fn saved_scan_round_trip() {
     .unwrap();
     assert_eq!(json["scannedAt"], 123);
     assert_eq!(json["driveFree"], 100);
+}
+
+#[test]
+fn remove_updates_ancestors_order_counts_and_rejects_detached_descendants() {
+    let mut tree = comparison_tree(&[
+        ("a", 0, Kind::Dir, 0),
+        ("b", 0, Kind::Dir, 0),
+        ("nested", 1, Kind::Dir, 0),
+        ("peer", 1, Kind::File, 20),
+        ("subtree", 3, Kind::Dir, 0),
+        ("gone", 5, Kind::File, 100),
+        ("stay", 3, Kind::File, 10),
+        ("other", 2, Kind::File, 40),
+    ]);
+    for id in 0..tree.nodes.len() {
+        let mut children = std::mem::take(&mut tree.nodes[id].children);
+        children.sort_by_key(|&id| std::cmp::Reverse(tree.nodes[id].size));
+        tree.nodes[id].children = children;
+    }
+    let original = tree.clone();
+    assert_eq!(tree.nodes[0].children, vec![1, 2]);
+    assert_eq!(tree.nodes[1].children, vec![3, 4]);
+    tree.remove(5).unwrap();
+    for (id, expected) in [(0, (70, 3, 3)), (1, (30, 2, 1)), (3, (10, 1, 0))] {
+        let n = tree.node(id).unwrap();
+        assert_eq!((n.size, n.files, n.folders), expected);
+    }
+    assert_eq!(tree.nodes[0].children, vec![2, 1]);
+    assert_eq!(tree.nodes[1].children, vec![4, 3]);
+    assert_eq!(tree.nodes[3].children, vec![7]);
+    assert_eq!(tree.nodes.len(), original.nodes.len());
+    assert_eq!(tree.nodes[5].parent, None);
+    assert_eq!(tree.nodes[6].parent, Some(5));
+    for id in [5, 6] {
+        assert_eq!(tree.node(id).err().unwrap(), "This item was deleted.");
+        assert_eq!(tree.path(id).unwrap_err(), "This item was deleted.");
+        assert_eq!(tree.view(id, 0, 0).unwrap_err(), "This item was deleted.");
+        assert_eq!(tree.largest(id, 50).unwrap_err(), "This item was deleted.");
+        assert_eq!(tree.breakdown(id).unwrap_err(), "This item was deleted.");
+        assert_eq!(tree.remove(id).unwrap_err(), "This item was deleted.");
+    }
+    assert_eq!(original.nodes[0].size, 170);
+    assert!(original.node(6).is_ok());
+    tree.remove(4).unwrap();
+    assert_eq!(
+        (
+            tree.nodes[0].size,
+            tree.nodes[0].files,
+            tree.nodes[0].folders
+        ),
+        (50, 2, 3)
+    );
+    tree.remove(1).unwrap();
+    assert_eq!(
+        (
+            tree.nodes[0].size,
+            tree.nodes[0].files,
+            tree.nodes[0].folders
+        ),
+        (40, 1, 1)
+    );
+    assert!(tree.remove(0).is_err());
+    assert!(tree.remove(usize::MAX).is_err());
+}
+
+#[test]
+fn resave_removed_subtree_compacts_without_rotating_or_losing_recycled() {
+    let (_fixture, mut tree) = fixture();
+    let dir = tempfile::tempdir().unwrap();
+    let old = saved(&tree, 1);
+    cache::save(dir.path(), &tree, &old).unwrap();
+    let original = saved(&tree, 2);
+    cache::save(dir.path(), &tree, &original).unwrap();
+    let previous = dir.path().join("previous");
+    let previous_tree = fs::read(previous.join(format!("{}.tree", cache::key(&old.path)))).unwrap();
+    let nested = tree.nodes.iter().position(|n| n.name == "nested").unwrap();
+    let removed = tree.nodes[nested].size;
+    tree.remove(nested).unwrap();
+    let meta = SavedScan {
+        recycled: removed,
+        ..saved(&tree, 2)
+    };
+    cache::save(dir.path(), &tree, &meta).unwrap();
+    let (loaded, actual) = cache::load(dir.path(), &meta.path).unwrap();
+    assert_eq!(actual, meta);
+    assert_eq!(loaded.nodes.len(), tree.nodes.len() - 2);
+    assert!(
+        loaded
+            .nodes
+            .iter()
+            .all(|n| n.name != "nested" && n.name != "code.rs")
+    );
+    assert_eq!(
+        (
+            loaded.nodes[0].size,
+            loaded.nodes[0].files,
+            loaded.nodes[0].folders
+        ),
+        (110, 2, 1)
+    );
+    assert_eq!(
+        loaded.nodes[0]
+            .children
+            .iter()
+            .map(|&id| loaded.nodes[id].size)
+            .collect::<Vec<_>>(),
+        vec![100, 10, 0]
+    );
+    assert_eq!(
+        loaded.nodes.iter().map(|n| &n.name).collect::<Vec<_>>(),
+        tree.nodes
+            .iter()
+            .enumerate()
+            .filter(|(id, _)| tree.node(*id).is_ok())
+            .map(|(_, n)| &n.name)
+            .collect::<Vec<_>>()
+    );
+    assert_eq!(cache::load(&previous, &meta.path).unwrap().1, old);
+    assert_eq!(
+        fs::read(previous.join(format!("{}.tree", cache::key(&old.path)))).unwrap(),
+        previous_tree
+    );
+    cache::save(dir.path(), &tree, &original).unwrap();
+    assert_eq!(cache::load(dir.path(), &meta.path).unwrap().1, meta);
+    let fresh = tempfile::tempdir().unwrap();
+    cache::save(fresh.path(), &tree, &meta).unwrap();
+    cache::save(fresh.path(), &tree, &meta).unwrap();
+    assert!(!fresh.path().join("previous").exists());
+}
+
+#[test]
+fn saved_scan_without_recycled_is_backwards_compatible() {
+    let (_fixture, tree) = fixture();
+    let mut json = serde_json::to_value(saved(&tree, 1)).unwrap();
+    json.as_object_mut().unwrap().remove("recycled");
+    assert_eq!(
+        serde_json::from_value::<SavedScan>(json).unwrap().recycled,
+        0
+    );
+}
+
+#[test]
+fn stale_background_save_cannot_restore_a_zero_byte_item() {
+    for name in ["empty", "zero.txt"] {
+        let (fixture, _) = fixture();
+        fs::write(fixture.path().join("zero.txt"), []).unwrap();
+        let mut tree = scanner::scan(fixture.path(), &AtomicBool::new(false), |_| {})
+            .unwrap()
+            .unwrap();
+        let original = tree.clone();
+        let old = saved(&original, 123);
+        let dir = tempfile::tempdir().unwrap();
+        cache::save(dir.path(), &tree, &old).unwrap();
+        let id = tree.nodes.iter().position(|n| n.name == name).unwrap();
+        tree.remove(id).unwrap();
+        let meta = saved(&tree, 123);
+        assert_eq!(meta.recycled, old.recycled);
+        cache::save(dir.path(), &tree, &meta).unwrap();
+        cache::save(dir.path(), &original, &old).unwrap();
+        let (loaded, actual) = cache::load(dir.path(), &meta.path).unwrap();
+        assert_eq!(actual, meta);
+        assert!(loaded.nodes.iter().all(|n| n.name != name));
+    }
+}
+
+#[test]
+fn recycle_refuses_a_changed_kind_or_missing_path() {
+    let (dir, tree) = fixture();
+    for (path, kind) in [
+        (dir.path().join("small.txt"), Kind::Dir),
+        (dir.path().join("nested"), Kind::File),
+        (dir.path().join("missing"), Kind::File),
+    ] {
+        assert_eq!(
+            crate::recycle::check(&path, kind).unwrap_err(),
+            "This item has changed. Rescan to refresh it."
+        );
+    }
+    assert!(crate::recycle::check(&tree.root_path.join("small.txt"), Kind::File).is_ok());
 }
 
 #[test]
@@ -1075,6 +1255,8 @@ fn total_response_budget_preserves_each_folders_size() {
 #[test]
 fn links_are_not_followed() {
     let (dir, _) = fixture();
+    assert!(crate::recycle::check(&dir.path().join("nested"), Kind::Dir).is_ok());
+    assert!(crate::recycle::check(&dir.path().join("nested/code.rs"), Kind::File).is_ok());
     let link = dir.path().join("loop");
     #[cfg(windows)]
     let created = std::os::windows::fs::symlink_dir(dir.path(), &link).is_ok();
@@ -1098,6 +1280,20 @@ fn links_are_not_followed() {
     assert_eq!((tree.nodes[0].size, tree.nodes[0].folders), (150, 2));
     assert!(tree.nodes.iter().all(|n| n.name != "loop"));
     assert!(scanner::scan(&link, &AtomicBool::new(false), |_| {}).is_err());
+    assert_eq!(
+        crate::recycle::check(&link, Kind::Dir).unwrap_err(),
+        "This item has changed. Rescan to refresh it."
+    );
+    for (path, kind) in [
+        (link.join("nested"), Kind::Dir),
+        (link.join("nested/code.rs"), Kind::File),
+    ] {
+        assert!(!scanner::excluded(&fs::symlink_metadata(&path).unwrap()));
+        assert_eq!(
+            crate::recycle::check(&path, kind).unwrap_err(),
+            "This item has changed. Rescan to refresh it."
+        );
+    }
     fs::remove_dir(&link)
         .or_else(|_| fs::remove_file(&link))
         .unwrap();

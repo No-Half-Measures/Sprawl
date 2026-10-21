@@ -2,6 +2,7 @@ mod admin;
 mod cache;
 mod changes;
 mod mft;
+mod recycle;
 mod scanner;
 
 use cache::SavedScan;
@@ -56,6 +57,7 @@ struct AppState {
     session: Mutex<Session>,
     worker: Mutex<()>,
     cache: Mutex<()>,
+    deletes: Mutex<()>,
     admin_declined: AtomicBool,
 }
 
@@ -105,6 +107,7 @@ fn scan_metadata(tree: &Tree) -> SavedScan {
         size: root.size,
         files: root.files,
         folders: root.folders,
+        recycled: 0,
         errors: tree.errors,
         drive_free: drive.map(|d| d.free),
         drive_total: drive.map(|d| d.total),
@@ -481,6 +484,114 @@ fn get_tree(
     tree(&state)?.view(node_id.unwrap_or(0), depth, max_children)
 }
 #[tauri::command]
+fn get_nodes(
+    ids: Vec<usize>,
+    state: State<'_, AppState>,
+) -> Result<Vec<Option<scanner::ViewNode>>, String> {
+    let tree = tree(&state)?;
+    Ok(ids.into_iter().map(|id| tree.view(id, 0, 0).ok()).collect())
+}
+
+#[derive(Serialize)]
+struct Recycled {
+    root: scanner::ViewNode,
+    recycled: u64,
+}
+
+#[tauri::command]
+async fn move_to_recycle_bin(node_id: usize, app: tauri::AppHandle) -> Result<Recycled, String> {
+    #[cfg(windows)]
+    let owner = app
+        .get_webview_window("main")
+        .ok_or("The main window is unavailable.")?
+        .hwnd()
+        .map_err(|e| e.to_string())?
+        .0 as usize;
+    #[cfg(not(windows))]
+    let owner = 0;
+    tauri::async_runtime::spawn_blocking(move || {
+        let state = app.state::<AppState>();
+        let _delete = state
+            .deletes
+            .lock()
+            .map_err(|_| "Delete state is unavailable".to_string())?;
+        let (tree, generation, path, mut meta) = {
+            let session = state
+                .session
+                .lock()
+                .map_err(|_| "Scan state is unavailable".to_string())?;
+            let tree = session
+                .tree
+                .clone()
+                .ok_or("No completed scan. Choose a folder to begin.")?;
+            let node = tree.node(node_id)?;
+            if node_id == 0 {
+                return Err("The scan root can't be deleted.".into());
+            }
+            let path = tree.path(node_id)?;
+            recycle::check(&path, node.kind)?;
+            let meta = session
+                .saved
+                .clone()
+                .ok_or("Scan metadata is unavailable.")?;
+            (tree, session.generation, path, meta)
+        };
+        let size = tree.nodes[node_id].size;
+        recycle::move_item(&path, &tree.nodes[node_id].name, owner)?;
+        let mut updated = (*tree).clone();
+        updated.remove(node_id)?;
+        let updated = Arc::new(updated);
+        let root = updated.view(0, 0, 0)?;
+        meta.size = root.size;
+        meta.files = root.files;
+        meta.folders = root.folders;
+        meta.recycled += size;
+        let result = Recycled {
+            root,
+            recycled: meta.recycled,
+        };
+        let panels = {
+            let mut session = state
+                .session
+                .lock()
+                .map_err(|_| "Scan state is unavailable".to_string())?;
+            if session.generation != generation
+                || !session
+                    .tree
+                    .as_ref()
+                    .is_some_and(|current| Arc::ptr_eq(current, &tree))
+            {
+                return Ok(result);
+            }
+            session.tree = Some(updated.clone());
+            session.saved = Some(meta.clone());
+            std::mem::take(&mut session.panels)
+        };
+        drop(panels);
+        let app = app.clone();
+        std::thread::spawn(move || {
+            let result = (|| {
+                let dir = scans_dir(&app)?;
+                let state = app.state::<AppState>();
+                let _cache = state
+                    .cache
+                    .lock()
+                    .map_err(|_| "Saved scans are unavailable".to_string())?;
+                cache::save(&dir, &updated, &meta).map_err(|e| e.to_string())
+            })();
+            match result {
+                Ok(()) => {
+                    let _ = app.emit("saved-scans-changed", ());
+                }
+                Err(e) => eprintln!("Could not save scan: {e}"),
+            }
+        });
+        Ok(result)
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+#[tauri::command]
 async fn get_largest_files(
     node_id: usize,
     limit: usize,
@@ -646,6 +757,8 @@ pub fn run() {
             start_scan,
             cancel_scan,
             get_tree,
+            get_nodes,
+            move_to_recycle_bin,
             get_largest_files,
             get_type_breakdown,
             get_changes,

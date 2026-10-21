@@ -1,7 +1,10 @@
 # DiskMapper
 
-A read-only Windows disk-space visualizer built with Tauri 2, Rust and React.
+A Windows disk-space visualizer built with Tauri 2, Rust and React.
 Choose a drive or folder, then explore its largest contents in a canvas treemap.
+Move unwanted items to the Recycle Bin after confirming in the app. Everything
+else is read-only. If Windows cannot recycle an item, it asks before permanently
+deleting it. Drive roots, essential Windows folders and the scan root are protected.
 See [DESIGN.md](DESIGN.md) for the product specification.
 
 ## Run
@@ -19,6 +22,7 @@ cd src-tauri
 cargo test
 cargo clippy --all-targets -- -D warnings
 cargo build
+cargo fmt --check
 cargo test smoke_real_directory -- --ignored --nocapture
 ```
 
@@ -60,6 +64,14 @@ the MFT and the directory walk and prints timings and differences.
 - Backspace / Alt+Left goes back, Alt+Up opens the parent, and Escape clears
   highlights and menus. Tab navigates controls; Enter opens a folder row;
   Shift+F10 opens its context menu. Copy path uses the WebView clipboard API.
+  Delete on a Contents, Largest files or Grown since row opens the same Recycle
+  Bin confirmation as the context menu. Cancel receives initial focus; Escape cancels.
+
+Recycling updates the map, panels and navigation without rescanning. Detached node
+IDs stay stable in memory; saved trees omit deleted subtrees. The updated snapshot
+keeps its scan date and previous comparison, and records bytes moved to the Recycle
+Bin. Partial failures leave the snapshot unchanged and ask you to rescan. The real
+Recycle Bin test is ignored by default because it changes the Windows Recycle Bin.
 
 The tree is a snapshot: files can change or disappear after scanning. Rescan to
 refresh it. Aggregates have no filesystem path, so cannot be opened or revealed.
@@ -83,3 +95,5 @@ files when the gap reaches the larger of 1 GiB and 1% of capacity. Saved scans u
 their recorded drive capacity. Unreadable items, system files, restore points and
 file-system overhead can contribute; administrator access can include more.
 Negative gaps from hard links or logical compressed-file sizes are not shown.
+Bytes moved to the Recycle Bin remain accounted for in this calculation and appear
+beside the scanned size. Space is freed when you empty the Recycle Bin.

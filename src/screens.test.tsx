@@ -3,6 +3,7 @@ import { Children, isValidElement, type ComponentProps, type ReactElement, type 
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import HomeScreen from './HomeScreen';
 import ResultsScreen, { SnapshotBanner } from './ResultsScreen';
+import RecycleDialog from './RecycleDialog';
 import { categories, formatSize, percent, type SavedScan, type TreeNode } from './model';
 
 const current: TreeNode = { id: 0, name: 'Other', kind: 'dir', size: 10000, files: 2, folders: 1, category: 'apps' };
@@ -10,6 +11,29 @@ const longName = `${'long-name-'.repeat(15)}.pbo`;
 const longPath = `${'deeply-nested-folder\\'.repeat(30)}${longName}`;
 const noop = () => {};
 afterEach(() => vi.unstubAllGlobals());
+
+describe('recycle confirmation', () => {
+  it('renders the item, full path, size and folder counts, with initial focus on Cancel', () => {
+    const html = renderToStaticMarkup(<RecycleDialog node={current} path="E:\Projects\Other" moving={false} cancel={noop} confirm={noop} />);
+    expect(html).toContain('role="alertdialog"');
+    expect(html).toContain('aria-modal="true"');
+    expect(html).toContain('Move to Recycle Bin?');
+    expect(html).toContain('Other');
+    expect(html).toContain('E:\\Projects\\Other');
+    expect(html).toContain('9.8 KB · 2 files · 1 folders');
+    expect(html).toContain('You can restore it from the Recycle Bin. The space is freed when you empty the Recycle Bin.');
+    expect(html).toMatch(/<button autofocus="">Cancel<\/button>/);
+    expect(html.match(/autofocus/g)).toHaveLength(1);
+    expect(html).toContain('class="danger">Move to Recycle Bin');
+  });
+  it('disables both buttons while moving and omits folder counts for files', () => {
+    const html = renderToStaticMarkup(<RecycleDialog node={{ ...current, kind: 'file' }} path="C:\file.txt" moving cancel={noop} confirm={noop} />);
+    expect(html.match(/disabled=""/g)).toHaveLength(2);
+    expect(html).toContain('Moving…');
+    expect(html).not.toContain('2 files');
+    expect(html).not.toContain('1 folders');
+  });
+});
 
 describe('screen details', () => {
   const gb = 1024 ** 3;
@@ -25,6 +49,13 @@ describe('screen details', () => {
     children: [{ id: 1, previousSize: gb }, { id: 2, previousSize: 2 * gb }, { id: 3, previousSize: null }, { id: 4, previousSize: 0 }],
     removed: { items: 2, bytes: gb }, grown: [],
   };
+  it('keeps recycled bytes out of Not found and shows them only at the drive root', () => {
+    const drive = { mount: 'C:\\', label: 'Disk', total: 100 * gb, free: 60 * gb };
+    const html = renderToStaticMarkup(<ResultsScreen {...props} drive={drive} recycled={20 * gb} />);
+    expect(html).toContain('· 20 GB in Recycle Bin');
+    expect(html).not.toContain('Not found by scan');
+    expect(renderToStaticMarkup(<ResultsScreen {...props} recycled={20 * gb} />)).not.toContain('in Recycle Bin');
+  });
   it('renders growth, shrink and new badges, skips aggregates and tiny deltas, and shows removals', () => {
     vi.stubGlobal('window', { devicePixelRatio: 1 });
     const tree: TreeNode = { ...props.current, children: [

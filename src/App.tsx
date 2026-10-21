@@ -5,9 +5,11 @@ import { open } from '@tauri-apps/plugin-dialog';
 import HomeScreen from './HomeScreen';
 import ScanScreen from './ScanScreen';
 import ResultsScreen, { SnapshotBanner } from './ResultsScreen';
+import RecycleDialog from './RecycleDialog';
 import {
   emptyProgress,
   isDriveRoot,
+  refreshTrails,
   type AdminStatus,
   type Breakdown,
   type Changes,
@@ -63,6 +65,15 @@ export default function App() {
   const [hover, setHover] = useState<number | null>(null);
   const [filter, setFilter] = useState<string | null>(null);
   const [menu, setMenu] = useState<Menu | null>(null);
+  const [deleting, setDeleting] = useState<{ node: TreeNode; path: string } | null>(null);
+  const [moving, setMoving] = useState(false);
+  const [recycled, setRecycled] = useState(0);
+  const [refresh, setRefresh] = useState(0);
+  const deleteFocus = useRef<HTMLElement | null>(null);
+  const deletePending = useRef(false);
+  const session = useRef(0);
+  const navigation = useRef({ trail, history });
+  navigation.current = { trail, history };
   const [loading, setLoading] = useState(false);
   const [opening, setOpening] = useState<string | null>(null);
   const [cancelling, setCancelling] = useState(false);
@@ -174,7 +185,7 @@ export default function App() {
       if (!stale) setError(String(e));
     });
     return () => { stale = true; };
-  }, [phase, currentId, trail[0]]);
+  }, [phase, currentId, trail[0], refresh]);
   useEffect(() => {
     if (phase !== 'results' || currentId == null) return;
     let stale = false;
@@ -205,13 +216,15 @@ export default function App() {
     return () => {
       stale = true;
     };
-  }, [phase, currentId, trail[0]]);
+  }, [phase, currentId, trail[0], refresh]);
   async function start(path: string) {
     if (launching.current) return;
     launching.current = true;
+    session.current += 1;
     queued.current = [];
     scanId.current = null;
     setSnapshot(null);
+    setRecycled(0);
     setChanges(null);
     setError('');
     setNotice('');
@@ -237,6 +250,7 @@ export default function App() {
   async function openSaved(path: string, scannedAt: number) {
     if (launching.current) return;
     launching.current = true;
+    session.current += 1;
     setOpening(path);
     scanId.current = null;
     queued.current = [];
@@ -246,6 +260,7 @@ export default function App() {
       const loaded = await invoke<{ root: TreeNode; errors: number; saved: SavedScan }>('load_saved_scan', { path, scannedAt });
       setScanPath(loaded.saved.path);
       setSnapshot(loaded.saved);
+      setRecycled(loaded.saved.recycled ?? 0);
       setSkipped(loaded.errors);
       setTrail([loaded.root]);
       setHistory([]);
@@ -319,6 +334,7 @@ export default function App() {
   }
   useEffect(() => {
     const keydown = (e: KeyboardEvent) => {
+      if (deleting) return;
       if (e.key === 'Escape') {
         setHover(null);
         setFilter(null);
@@ -358,13 +374,26 @@ export default function App() {
       setMenu({
         node,
         x: Math.min(x, window.innerWidth - 215),
-        y: Math.min(y, window.innerHeight - 155),
+        y: Math.min(y, window.innerHeight - 200),
       });
     }
   }
   async function action(command: string, node: TreeNode) {
     setMenu(null);
     if (node.id === null) return;
+    if (command === 'recycle') {
+      if (node.id === 0 || deleting || deletePending.current) return;
+      deletePending.current = true;
+      deleteFocus.current = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+      const currentSession = session.current;
+      try {
+        const path = await invoke<string>('get_node_path', { nodeId: node.id });
+        if (session.current === currentSession) setDeleting({ node, path });
+      } catch (e) {
+        if (session.current === currentSession) setError(String(e));
+      } finally { deletePending.current = false; }
+      return;
+    }
     try {
       if (command === 'copy') {
         const path = await invoke<string>('get_node_path', { nodeId: node.id });
@@ -375,6 +404,42 @@ export default function App() {
       }
     } catch (e) {
       setError(String(e));
+    }
+  }
+  function closeDelete() {
+    setDeleting(null);
+    deleteFocus.current?.focus();
+  }
+  async function recycle() {
+    if (!deleting || moving) return;
+    const { node } = deleting;
+    const currentSession = session.current;
+    setMoving(true);
+    setError('');
+    try {
+      const result = await invoke<{ root: TreeNode; recycled: number }>('move_to_recycle_bin', { nodeId: node.id });
+      if (session.current !== currentSession) return;
+      setNotice(`Moved ${node.name} to the Recycle Bin.`);
+      setRecycled(result.recycled);
+      setSnapshot(meta => meta && { ...meta, size: result.root.size, files: result.root.files, folders: result.root.folders, recycled: result.recycled });
+      setHover(null);
+      setFilter(null);
+      setMenu(null);
+      const { trail, history } = navigation.current;
+      const ids = [...new Set([...trail, ...history.flat()].flatMap(n => n.id === null ? [] : [n.id]))];
+      const nodes = await invoke<(TreeNode | null)[]>('get_nodes', { ids });
+      if (session.current !== currentSession) return;
+      const next = refreshTrails(trail, history, ids, nodes);
+      setTrail(next.trail.length ? next.trail : [result.root]);
+      setHistory(next.history);
+      setRefresh(value => value + 1);
+    } catch (e) {
+      if (session.current !== currentSession) return;
+      if (String(e) === 'Delete cancelled.') setNotice('Delete cancelled.');
+      else setError(String(e));
+    } finally {
+      setMoving(false);
+      closeDelete();
     }
   }
   const current = trail[trail.length - 1];
@@ -476,6 +541,7 @@ export default function App() {
           scanPath={scanPath}
           skipped={skipped}
           snapshot={snapshot}
+          recycled={recycled}
           elevated={admin?.elevated}
           changes={changes}
           error={error}
@@ -526,8 +592,12 @@ export default function App() {
           >
             Copy path
           </button>
+          {menu.node.id !== null && menu.node.id !== 0 && (
+            <button role="menuitem" onClick={() => void action('recycle', menu.node)}>Move to Recycle Bin…</button>
+          )}
         </div>
       )}
+      {deleting && <RecycleDialog {...deleting} moving={moving} cancel={closeDelete} confirm={() => void recycle()} />}
     </main>
   );
 }

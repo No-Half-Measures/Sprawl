@@ -33,6 +33,8 @@ pub struct SavedScan {
     pub size: u64,
     pub files: u64,
     pub folders: u64,
+    #[serde(default)]
+    pub recycled: u64,
     pub errors: u64,
     pub drive_free: Option<u64>,
     pub drive_total: Option<u64>,
@@ -110,10 +112,14 @@ pub fn save(dir: &Path, tree: &Tree, meta: &SavedScan) -> io::Result<()> {
     fs::create_dir_all(dir)?;
     let saved = list(dir)?;
     let key = key(&meta.path);
-    if saved
-        .iter()
-        .any(|s| self::key(&s.path) == key && s.scanned_at > meta.scanned_at)
-    {
+    if saved.iter().any(|s| {
+        self::key(&s.path) == key
+            && (s.scanned_at > meta.scanned_at
+                || (s.scanned_at == meta.scanned_at
+                    && (s.recycled > meta.recycled
+                        || s.files < meta.files
+                        || s.folders < meta.folders)))
+    }) {
         return Ok(());
     }
     let temp = dir.join(format!("{key}.tree.tmp"));
@@ -123,13 +129,34 @@ pub fn save(dir: &Path, tree: &Tree, meta: &SavedScan) -> io::Result<()> {
     let mut encoder = zstd::stream::write::Encoder::new(writer, 3)?;
     encoder.include_checksum(true)?;
     let mut writer = BufWriter::new(encoder);
+    let mut reachable = vec![false; tree.nodes.len()];
+    let mut stack = vec![0];
+    while let Some(id) = stack.pop() {
+        if let Some(seen) = reachable.get_mut(id)
+            && !*seen
+        {
+            *seen = true;
+            stack.extend(&tree.nodes[id].children);
+        }
+    }
+    let mut indices = vec![usize::MAX; tree.nodes.len()];
+    let mut count = 0;
+    for (id, &reachable) in reachable.iter().enumerate() {
+        if reachable {
+            indices[id] = count;
+            count += 1;
+        }
+    }
     bincode::serde::encode_into_std_write(
-        (tree.nodes.len(), &tree.root_path, tree.errors),
+        (count, &tree.root_path, tree.errors),
         &mut writer,
         bincode::config::standard(),
     )
     .map_err(io::Error::other)?;
-    for node in &tree.nodes {
+    for (id, node) in tree.nodes.iter().enumerate() {
+        if !reachable[id] {
+            continue;
+        }
         if node
             .category
             .is_some_and(|index| usize::from(index) >= categories().len())
@@ -139,8 +166,15 @@ pub fn save(dir: &Path, tree: &Tree, meta: &SavedScan) -> io::Result<()> {
         bincode::serde::encode_into_std_write(
             DiskNode {
                 name: Cow::Borrowed(&node.name),
-                parent: node.parent,
-                children: Cow::Borrowed(&node.children),
+                parent: node
+                    .parent
+                    .map(|id| indices.get(id).copied().unwrap_or(usize::MAX)),
+                children: Cow::Owned(
+                    node.children
+                        .iter()
+                        .map(|&id| indices.get(id).copied().unwrap_or(usize::MAX))
+                        .collect(),
+                ),
                 kind: node.kind,
                 size: node.size,
                 files: node.files,
@@ -379,6 +413,7 @@ mod benchmarks {
             size: root.size,
             files: root.files,
             folders: root.folders,
+            recycled: 0,
             errors: tree.errors,
             drive_free: None,
             drive_total: None,

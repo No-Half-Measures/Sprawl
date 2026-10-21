@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { categories, categoryFor, formatAge, formatDelta, formatScanDate, formatSize, isDriveRoot, notFoundByScan, percent, staleness, type SavedScan, type TreeNode } from './model';
+import { categories, categoryFor, formatAge, formatDelta, formatScanDate, formatSize, isDriveRoot, notFoundByScan, percent, refreshTrails, staleness, type SavedScan, type TreeNode } from './model';
 import { fitLabel, layoutTree, textColor, wrapLabel } from './layout';
 
 afterEach(() => vi.useRealTimers());
@@ -123,6 +123,24 @@ describe('shared file categories', () => {
 });
 const file = (id: number, size: number): TreeNode => ({ id, name: `file${id}`, kind: 'file', size, files: 1, folders: 0, category: 'other' });
 const root: TreeNode = { id: 0, name: 'root', kind: 'dir', size: 100, files: 3, folders: 0, children: [file(1, 60), file(2, 30), file(3, 10)] };
+describe('navigation after recycling', () => {
+  it('refreshes every surviving size and returns to the deepest attached ancestor', () => {
+    const parent = { ...root, id: 1, name: 'parent' };
+    const deleted = { ...root, id: 2, name: 'deleted' };
+    const descendant = { ...root, id: 3, name: 'descendant' };
+    const updated = { ...root, size: 20, files: 1 };
+    const updatedParent = { ...parent, size: 10, files: 1 };
+    const next = refreshTrails([root, parent, deleted, descendant],
+      [[root], [root, parent], [root, parent, deleted], [root, descendant]],
+      [0, 1, 2, 3], [updated, updatedParent, null, null]);
+    expect(next).toEqual({ trail: [updated, updatedParent], history: [[updated], [updated, updatedParent]] });
+  });
+  it('retains an attached current trail and drops history with any invalid id', () => {
+    const updated = { ...root, size: 90 };
+    expect(refreshTrails([root], [[root, file(99, 1)]], [0, 99], [updated, null]))
+      .toEqual({ trail: [updated], history: [] });
+  });
+});
 describe('squarified treemap', () => {
   it('gives proportional areas without overlap or exceeding bounds', () => {
     const tiles = layoutTree(root, 1000, 600, false);

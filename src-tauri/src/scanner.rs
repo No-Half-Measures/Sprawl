@@ -58,7 +58,7 @@ pub enum Kind {
     Other,
 }
 
-#[derive(Serialize, Deserialize)]
+#[derive(Clone, Serialize, Deserialize)]
 pub struct Node {
     pub name: String,
     pub parent: Option<usize>,
@@ -70,7 +70,7 @@ pub struct Node {
     pub category: Option<u8>,
 }
 
-#[derive(Serialize, Deserialize)]
+#[derive(Clone, Serialize, Deserialize)]
 pub struct Tree {
     pub nodes: Vec<Node>,
     pub root_path: PathBuf,
@@ -243,7 +243,7 @@ fn scan_directory<'scope>(
     flush(&mut entries, &mut counts);
 }
 
-fn excluded(metadata: &fs::Metadata) -> bool {
+pub(crate) fn excluded(metadata: &fs::Metadata) -> bool {
     metadata.file_type().is_symlink()
 }
 
@@ -444,14 +444,57 @@ pub struct Breakdown {
 
 impl Tree {
     pub fn node(&self, id: usize) -> Result<&Node, String> {
-        self.nodes
+        let node = self
+            .nodes
             .get(id)
-            .ok_or_else(|| "This item is no longer available. Scan again.".into())
+            .ok_or_else(|| "This item is no longer available. Scan again.".to_string())?;
+        let mut current = id;
+        while let Some(parent) = self.nodes[current].parent {
+            current = parent;
+        }
+        if current != 0 {
+            return Err("This item was deleted.".into());
+        }
+        Ok(node)
+    }
+    pub fn remove(&mut self, id: usize) -> Result<(), String> {
+        let node = self.node(id)?;
+        let Some(mut parent) = node.parent else {
+            return Err("The scan root can't be deleted.".into());
+        };
+        let (size, files, folders) = (
+            node.size,
+            node.files,
+            node.folders + u64::from(node.kind == Kind::Dir),
+        );
+        self.nodes[parent].children.retain(|&child| child != id);
+        self.nodes[id].parent = None;
+        loop {
+            self.nodes[parent].size -= size;
+            self.nodes[parent].files -= files;
+            self.nodes[parent].folders -= folders;
+            let Some(ancestor) = self.nodes[parent].parent else {
+                break;
+            };
+            let mut children = std::mem::take(&mut self.nodes[ancestor].children);
+            let position = children.iter().position(|&child| child == parent).unwrap();
+            children.remove(position);
+            let position = children.partition_point(|&child| {
+                self.nodes[child].size > self.nodes[parent].size
+                    || (self.nodes[child].size == self.nodes[parent].size
+                        && self.nodes[child].name < self.nodes[parent].name)
+            });
+            children.insert(position, parent);
+            self.nodes[ancestor].children = children;
+            parent = ancestor;
+        }
+        Ok(())
     }
     pub fn path(&self, id: usize) -> Result<PathBuf, String> {
+        self.node(id)?;
         let mut parts = vec![];
         let mut current = id;
-        while let Some(parent) = self.node(current)?.parent {
+        while let Some(parent) = self.nodes[current].parent {
             parts.push(&self.nodes[current].name);
             current = parent;
         }
