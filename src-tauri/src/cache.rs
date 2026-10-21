@@ -156,6 +156,18 @@ pub fn save(dir: &Path, tree: &Tree, meta: &SavedScan) -> io::Result<()> {
     writer.flush()?;
     writer.get_ref().sync_all()?;
     drop(writer);
+    let previous = dir.join("previous");
+    if saved
+        .iter()
+        .any(|s| self::key(&s.path) == key && s.scanned_at < meta.scanned_at)
+    {
+        fs::create_dir_all(&previous)?;
+        remove(&previous, &key);
+        for extension in ["tree", "json"] {
+            let name = format!("{key}.{extension}");
+            fs::rename(dir.join(&name), previous.join(&name))?;
+        }
+    }
     let meta_path = dir.join(format!("{key}.json"));
     match fs::remove_file(&meta_path) {
         Ok(()) => (),
@@ -171,9 +183,32 @@ pub fn save(dir: &Path, tree: &Tree, meta: &SavedScan) -> io::Result<()> {
     drop(writer);
     fs::rename(temp, meta_path)?;
     for old in list(dir)?.iter().skip(10) {
-        remove(dir, &self::key(&old.path));
+        let key = self::key(&old.path);
+        remove(dir, &key);
+        remove(&previous, &key);
+    }
+    let retained: std::collections::HashSet<_> =
+        list(dir)?.iter().map(|s| self::key(&s.path)).collect();
+    for old in list(&previous)? {
+        let key = self::key(&old.path);
+        if !retained.contains(&key) {
+            remove(&previous, &key);
+        }
     }
     Ok(())
+}
+
+pub fn baseline(dir: &Path, current: &SavedScan) -> Result<Option<(Tree, SavedScan)>, String> {
+    for dir in [dir.to_path_buf(), dir.join("previous")] {
+        if list(&dir)
+            .map_err(|e| e.to_string())?
+            .iter()
+            .any(|s| key(&s.path) == key(&current.path) && s.scanned_at < current.scanned_at)
+        {
+            return load(&dir, &current.path).map(Some);
+        }
+    }
+    Ok(None)
 }
 
 pub fn load(dir: &Path, path: &str) -> Result<(Tree, SavedScan), String> {

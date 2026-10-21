@@ -4,11 +4,13 @@ import {
   categories,
   categoryColor,
   formatAge,
+  formatDelta,
   formatScanDate,
   formatSize,
   percent,
   staleness,
   type Breakdown,
+  type Changes,
   type Drive,
   type LargeFile,
   type SavedScan,
@@ -36,6 +38,7 @@ interface Props {
   parentSize: number | undefined;
   parentName: string | undefined;
   drive?: Drive;
+  changes?: Changes | null;
   scanPath: string;
   skipped: number;
   error: string;
@@ -63,6 +66,7 @@ export default function ResultsScreen({
   parentSize,
   parentName,
   drive,
+  changes,
   scanPath,
   skipped,
   error,
@@ -82,6 +86,7 @@ export default function ResultsScreen({
   context,
   action,
 }: Props) {
+  const [fileTab, setFileTab] = useState<'largest' | 'grown'>('largest');
   const [split, setSplit] = useState(() => {
     try {
       const saved = localStorage.getItem('diskmapper.split');
@@ -98,6 +103,10 @@ export default function ResultsScreen({
     }
   };
   const visibleBreakdown = breakdown.filter(b => b.bytes > 0);
+  const previousSizes = new Map(changes?.children.map(n => [n.id, n.previousSize]));
+  const since = changes ? formatScanDate(changes.since) : '';
+  const showGrown = fileTab === 'grown' && !!changes;
+  const files = showGrown ? changes.grown : largest;
   const currentPath = trail.length > 1
     ? `${scanPath.replace(/[\\/]$/, '')}\\${trail.slice(1).map(n => n.name).join('\\')}`
     : scanPath;
@@ -146,6 +155,9 @@ export default function ResultsScreen({
             ) : <strong>{formatSize(current.size)}</strong>}
             <span>{current.files.toLocaleString()} files</span>
             <span>{current.folders.toLocaleString()} folders</span>
+            {changes && (
+              <span>{changes.previousSize === null ? 'New' : current.size === changes.previousSize ? 'No change' : formatDelta(current.size - changes.previousSize)} since {since}</span>
+            )}
             {drive ? (
               <span className="drive-capacity">
                 <span>{drive.mount}</span>
@@ -213,7 +225,10 @@ export default function ResultsScreen({
               <span>Largest first</span>
             </div>
             <div className="contents-scroll">
-              {!loading && tree && tree.id === current.id && tree.children?.map((n, i) => (
+              {!loading && tree && tree.id === current.id && tree.children?.map((n, i) => {
+                const previous = n.id === null ? undefined : previousSizes.get(n.id);
+                const delta = n.size - (previous ?? 0);
+                return (
                 <button
                   key={n.id ?? `other-${i}`}
                   title={n.name}
@@ -257,7 +272,12 @@ export default function ResultsScreen({
                         ? `${n.files.toLocaleString()} files`
                         : categories.find(c => c.id === n.category)?.label}
                     </span>
-                    <strong className="row-size">{formatSize(n.size)}</strong>
+                    <strong className="row-size">
+                      {previous !== undefined && (previous === null || Math.abs(delta) >= 1024 ** 2) && (
+                        <small className={`delta ${delta < 0 ? 'shrink' : 'growth'}`}>{previous === null ? 'New' : formatDelta(delta)}</small>
+                      )}
+                      {formatSize(n.size)}
+                    </strong>
                     <span className="row-percent">{percent(n.size, current.size)}</span>
                   </span>
                   <span className="row-meter">
@@ -269,9 +289,16 @@ export default function ResultsScreen({
                     />
                   </span>
                 </button>
-              ))}
+                );
+              })}
               {!loading && !tree?.children?.length && (
                 <p className="quiet-empty">No items in this folder.</p>
+              )}
+              {!loading && changes && changes.removed.items > 0 && (
+                <div className="content-row summary-row">
+                  <span>{changes.removed.items.toLocaleString()} removed items</span>
+                  <strong className="delta shrink">−{formatSize(changes.removed.bytes)}</strong>
+                </div>
               )}
             </div>
           </section>
@@ -317,11 +344,16 @@ export default function ResultsScreen({
           />
           <section className="largest-panel">
             <div className="section-heading">
-              <h2>Largest files</h2>
-              <span>Top {largest.length} in this folder</span>
+              {changes ? (
+                <div className="file-tabs" role="tablist" aria-label="File ranking">
+                  <button role="tab" aria-selected={!showGrown} onClick={() => setFileTab('largest')}>Largest files</button>
+                  <button role="tab" aria-selected={showGrown} onClick={() => setFileTab('grown')}>Grown since {since}</button>
+                </div>
+              ) : <h2>Largest files</h2>}
+              <span>Top {files.length} in this folder</span>
             </div>
             <div className="largest-scroll">
-              {!loading && largest.map((f, i) => (
+              {!loading && files.map((f, i) => (
                 <button
                   key={f.id}
                   className="large-row"
@@ -333,17 +365,26 @@ export default function ResultsScreen({
                     e.preventDefault();
                     context({ ...f, kind: 'file', files: 1, folders: 0 }, e.clientX, e.clientY);
                   }}
+                  onKeyDown={e => {
+                    if (e.key === 'ContextMenu' || (e.shiftKey && e.key === 'F10')) {
+                      e.preventDefault();
+                      const r = e.currentTarget.getBoundingClientRect();
+                      context({ ...f, kind: 'file', files: 1, folders: 0 }, r.left, r.top);
+                    }
+                  }}
                 >
                   <span className="rank">{i + 1}</span>
                   <span className="large-name">
                     <strong title={f.name}>{f.name}</strong>
                     <small title={f.relativePath}>{f.relativePath}</small>
                   </span>
-                  <span className="large-size"><strong>{formatSize(f.size)}</strong><small>{percent(f.size, current.size)}</small></span>
+                  {showGrown && 'previousSize' in f ? (
+                    <span className="large-size"><strong className="delta growth">{formatDelta(f.size - (f.previousSize ?? 0))}</strong><small>{f.previousSize === null ? 'New' : `was ${formatSize(f.previousSize)}`}</small></span>
+                  ) : <span className="large-size"><strong>{formatSize(f.size)}</strong><small>{percent(f.size, current.size)}</small></span>}
                 </button>
               ))}
-              {!loading && !largest.length && (
-                <p className="quiet-empty">No files found.</p>
+              {!loading && !files.length && (
+                <p className="quiet-empty">{showGrown ? `No files grew since ${since}.` : 'No files found.'}</p>
               )}
             </div>
           </section>

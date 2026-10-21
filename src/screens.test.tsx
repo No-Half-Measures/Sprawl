@@ -1,5 +1,5 @@
 import { renderToStaticMarkup } from 'react-dom/server';
-import { Children, isValidElement, type ReactElement, type ReactNode } from 'react';
+import { Children, isValidElement, type ComponentProps, type ReactElement, type ReactNode } from 'react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import HomeScreen from './HomeScreen';
 import ResultsScreen, { SnapshotBanner } from './ResultsScreen';
@@ -12,6 +12,47 @@ const noop = () => {};
 afterEach(() => vi.unstubAllGlobals());
 
 describe('screen details', () => {
+  const gb = 1024 ** 3;
+  const props: ComponentProps<typeof ResultsScreen> = {
+    current: { ...current, size: 20 * gb }, trail: [current], history: [],
+    parentSize: undefined, parentName: undefined, scanPath: 'C:\\', skipped: 0,
+    error: '', loading: false, tree: null, hover: null, linkedHover: null, filter: null,
+    largest: [], breakdown: [], back: noop, up: noop, navigate: noop, enter: noop,
+    setHover: noop, setFilter: noop, context: noop, action: async () => {},
+  };
+  const changes = {
+    since: 123, previousSize: 19 * gb,
+    children: [{ id: 1, previousSize: gb }, { id: 2, previousSize: 2 * gb }, { id: 3, previousSize: null }, { id: 4, previousSize: 0 }],
+    removed: { items: 2, bytes: gb }, grown: [],
+  };
+  it('renders growth, shrink and new badges, skips aggregates and tiny deltas, and shows removals', () => {
+    vi.stubGlobal('window', { devicePixelRatio: 1 });
+    const tree: TreeNode = { ...props.current, children: [
+      { ...current, id: 1, name: 'grown', size: 2 * gb },
+      { ...current, id: 2, name: 'shrunk', size: gb },
+      { ...current, id: 3, name: 'new', size: 0 },
+      { ...current, id: 4, name: 'tiny', size: 1024 },
+      { ...current, id: null, name: '4 smaller items', size: gb },
+    ] };
+    const html = renderToStaticMarkup(<ResultsScreen {...props} tree={tree} changes={changes} />);
+    expect(html).toContain('+1 GB since');
+    expect(html).toContain('class="delta growth">+1 GB');
+    expect(html).toContain('class="delta shrink">−1 GB');
+    expect(html.match(/class="delta growth">New/g)).toHaveLength(1);
+    expect(html.match(/class="delta /g)).toHaveLength(4);
+    expect(html).toContain('2 removed items');
+    expect(html).toContain('Grown since');
+    const firstScan = renderToStaticMarkup(<ResultsScreen {...props} tree={tree} />);
+    expect(firstScan).not.toContain('class="delta ');
+    expect(firstScan).not.toContain('removed items');
+    expect(firstScan).not.toContain('Grown since');
+  });
+  it('labels new and unchanged folders', () => {
+    const unchanged = renderToStaticMarkup(<ResultsScreen {...props} changes={{ ...changes, previousSize: props.current.size }} />);
+    expect(unchanged).toContain('No change since');
+    const added = renderToStaticMarkup(<ResultsScreen {...props} changes={{ ...changes, previousSize: null }} />);
+    expect(added).toContain('New since');
+  });
   it('renders named comparisons, positive categories, tiny percentages, and full path titles', () => {
     vi.stubGlobal('window', { devicePixelRatio: 1 });
     const nestedName = 'long-nested-folder-name-'.repeat(8);

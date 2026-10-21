@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { categories, categoryFor, formatAge, formatScanDate, formatSize, isDriveRoot, percent, staleness, type SavedScan, type TreeNode } from './model';
+import { categories, categoryFor, formatAge, formatDelta, formatScanDate, formatSize, isDriveRoot, percent, staleness, type SavedScan, type TreeNode } from './model';
 import { fitLabel, layoutTree, textColor, wrapLabel } from './layout';
 
 afterEach(() => vi.useRealTimers());
@@ -58,6 +58,12 @@ describe('drive root matching', () => {
 });
 
 describe('binary size formatting', () => {
+  it('formats signed changes with a real minus sign', () => {
+    expect(formatDelta(1.5 * 1024 ** 3)).toBe('+1.5 GB');
+    expect(formatDelta(-300 * 1024 ** 2)).toBe('−300 MB');
+    expect(formatDelta(0)).toBe('0 B');
+    expect(formatDelta(-0)).toBe('0 B');
+  });
   it('handles zero, boundaries, fractions and large files', () => {
     expect(formatSize(0)).toBe('0 B'); expect(formatSize(-1)).toBe('0 B');
     expect(formatSize(1023)).toBe('1,023 B'); expect(formatSize(1024)).toBe('1 KB');

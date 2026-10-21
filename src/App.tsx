@@ -10,6 +10,7 @@ import {
   isDriveRoot,
   type AdminStatus,
   type Breakdown,
+  type Changes,
   type Drive,
   type LargeFile,
   type Progress,
@@ -57,6 +58,7 @@ export default function App() {
   const [history, setHistory] = useState<TreeNode[][]>([]);
   const [tree, setTree] = useState<TreeNode | null>(null);
   const [largest, setLargest] = useState<LargeFile[]>([]);
+  const [changes, setChanges] = useState<Changes | null>(null);
   const [breakdown, setBreakdown] = useState<Breakdown[]>([]);
   const [hover, setHover] = useState<number | null>(null);
   const [filter, setFilter] = useState<string | null>(null);
@@ -163,6 +165,17 @@ export default function App() {
   }, [phase]);
   const currentId = trail[trail.length - 1]?.id;
   useEffect(() => {
+    setChanges(null);
+    if (phase !== 'results' || currentId == null) return;
+    let stale = false;
+    invoke<Changes | null>('get_changes', { nodeId: currentId }).then(next => {
+      if (!stale) setChanges(next);
+    }).catch(e => {
+      if (!stale) setError(String(e));
+    });
+    return () => { stale = true; };
+  }, [phase, currentId, trail[0]]);
+  useEffect(() => {
     if (phase !== 'results' || currentId == null) return;
     let stale = false;
     setLoading(true);
@@ -199,6 +212,7 @@ export default function App() {
     queued.current = [];
     scanId.current = null;
     setSnapshot(null);
+    setChanges(null);
     setError('');
     setNotice('');
     setScanPath(path);
@@ -284,11 +298,13 @@ export default function App() {
     }
   }
   function navigate(next: TreeNode[]) {
+    setChanges(null);
     setHistory(h => [...h, trail]);
     setTrail(next);
   }
   function back() {
     if (history.length) {
+      setChanges(null);
       setTrail(history[history.length - 1]);
       setHistory(h => h.slice(0, -1));
     }
@@ -459,6 +475,7 @@ export default function App() {
           drive={trail.length === 1 && drive && isDriveRoot(scanPath, drive.mount) ? drive : undefined}
           scanPath={scanPath}
           skipped={skipped}
+          changes={changes}
           error={error}
           loading={loading}
           tree={tree}

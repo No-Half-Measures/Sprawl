@@ -1,5 +1,6 @@
 mod admin;
 mod cache;
+mod changes;
 mod mft;
 mod scanner;
 
@@ -28,6 +29,7 @@ struct Session {
 struct RootPanels {
     largest: OnceLock<Result<Vec<scanner::LargeFile>, String>>,
     breakdown: OnceLock<Result<Vec<scanner::Breakdown>, String>>,
+    changes: OnceLock<Result<Option<changes::Comparison>, String>>,
 }
 
 impl Session {
@@ -261,6 +263,11 @@ async fn clear_saved_scans(app: tauri::AppHandle) -> Result<(), String> {
             .lock()
             .map_err(|_| "Saved scans are unavailable".to_string())?;
         cache::clear(&dir).map_err(|e| e.to_string())?;
+        state
+            .session
+            .lock()
+            .map_err(|_| "Scan state is unavailable".to_string())?
+            .panels = Arc::default();
         let _ = app.emit("saved-scans-changed", ());
         Ok(())
     })
@@ -531,6 +538,52 @@ async fn get_type_breakdown(
     .map_err(|e| e.to_string())?
 }
 #[tauri::command]
+async fn get_changes(
+    node_id: usize,
+    app: tauri::AppHandle,
+    state: State<'_, AppState>,
+) -> Result<Option<changes::Changes>, String> {
+    let (tree, saved, panels) = {
+        let session = state
+            .session
+            .lock()
+            .map_err(|_| "Scan state is unavailable".to_string())?;
+        (
+            session
+                .tree
+                .clone()
+                .ok_or("No completed scan. Choose a folder to begin.")?,
+            session.saved.clone(),
+            session.panels.clone(),
+        )
+    };
+    let dir = scans_dir(&app)?;
+    tauri::async_runtime::spawn_blocking(move || {
+        tree.node(node_id)?;
+        let comparison = panels.changes.get_or_init(|| {
+            let Some(saved) = saved else { return Ok(None) };
+            let baseline = {
+                let state = app.state::<AppState>();
+                let _cache = state
+                    .cache
+                    .lock()
+                    .map_err(|_| "Saved scans are unavailable".to_string())?;
+                cache::baseline(&dir, &saved)?
+            };
+            Ok(baseline.map(|(previous, meta)| {
+                changes::Comparison::new(&tree, &previous, meta.scanned_at)
+            }))
+        });
+        match comparison {
+            Ok(Some(comparison)) => comparison.view(&tree, node_id).map(Some),
+            Ok(None) => Ok(None),
+            Err(error) => Err(error.clone()),
+        }
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+#[tauri::command]
 fn get_node_path(node_id: usize, state: State<'_, AppState>) -> Result<String, String> {
     Ok(tree(&state)?.path(node_id)?.to_string_lossy().into_owned())
 }
@@ -595,6 +648,7 @@ pub fn run() {
             get_tree,
             get_largest_files,
             get_type_breakdown,
+            get_changes,
             get_node_path,
             reveal_in_explorer,
             open_folder

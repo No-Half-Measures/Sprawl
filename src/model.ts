@@ -2,6 +2,8 @@ import categories from './categories.json';
 export { categories };
 export interface TreeNode { id: number | null; name: string; kind: 'dir' | 'file' | 'other'; size: number; files: number; folders: number; category?: string; children?: TreeNode[] }
 export interface LargeFile { id: number; name: string; relativePath: string; size: number; category: string }
+export interface GrownFile { id: number; name: string; relativePath: string; size: number; previousSize: number | null }
+export interface Changes { since: number; previousSize: number | null; children: { id: number; previousSize: number | null }[]; removed: { items: number; bytes: number }; grown: GrownFile[] }
 export interface Breakdown { category: string; bytes: number; files: number }
 export interface Drive { mount: string; label: string; total: number; free: number }
 export interface AdminStatus { supported: boolean; elevated: boolean; alwaysElevate: boolean; declined: boolean }
@@ -43,6 +45,9 @@ export function formatSize(bytes: number): string {
   const index = Math.min(Math.floor(Math.log(bytes) / Math.log(1024)), units.length - 1);
   const value = bytes / 1024 ** index;
   return `${value.toLocaleString('en-GB', { maximumFractionDigits: index === 0 || value >= 100 ? 0 : 1 })} ${units[index]}`;
+}
+export function formatDelta(bytes: number): string {
+  return `${bytes > 0 ? '+' : bytes < 0 ? '−' : ''}${formatSize(Math.abs(bytes))}`;
 }
 export function categoryFor(name: string): string {
   const dot = name.lastIndexOf('.');

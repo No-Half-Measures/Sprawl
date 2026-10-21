@@ -256,7 +256,244 @@ fn saved_scan_keys_and_overwrite() {
     assert_eq!(cache::load(dir.path(), &first.path).unwrap().1, second);
     cache::save(dir.path(), &tree, &first).unwrap();
     assert_eq!(cache::load(dir.path(), &first.path).unwrap().1, second);
-    assert_eq!(fs::read_dir(dir.path()).unwrap().count(), 2);
+    assert_eq!(fs::read_dir(dir.path()).unwrap().count(), 3);
+    assert_eq!(
+        cache::load(&dir.path().join("previous"), &first.path)
+            .unwrap()
+            .1,
+        first
+    );
+}
+
+#[test]
+fn saved_scan_rotation_and_baselines() {
+    let (_fixture, mut tree) = fixture();
+    let dir = tempfile::tempdir().unwrap();
+    let previous = dir.path().join("previous");
+    let first = saved(&tree, 1);
+    assert!(cache::baseline(dir.path(), &first).unwrap().is_none());
+    cache::save(dir.path(), &tree, &first).unwrap();
+    assert!(cache::baseline(dir.path(), &first).unwrap().is_none());
+    tree.nodes[0].size += 10;
+    let second = saved(&tree, 2);
+    assert_eq!(
+        cache::baseline(dir.path(), &second).unwrap().unwrap().1,
+        first
+    );
+    cache::save(dir.path(), &tree, &second).unwrap();
+    assert_eq!(cache::load(&previous, &first.path).unwrap().1, first);
+    assert_eq!(
+        cache::baseline(dir.path(), &second).unwrap().unwrap().1,
+        first
+    );
+    tree.nodes[0].size += 10;
+    let third = saved(&tree, 3);
+    assert_eq!(
+        cache::baseline(dir.path(), &third).unwrap().unwrap().1,
+        second
+    );
+    cache::save(dir.path(), &tree, &third).unwrap();
+    assert_eq!(cache::load(&previous, &first.path).unwrap().1, second);
+    assert_eq!(
+        cache::baseline(dir.path(), &third).unwrap().unwrap().1,
+        second
+    );
+    assert!(cache::baseline(dir.path(), &first).unwrap().is_none());
+    cache::save(dir.path(), &tree, &third).unwrap();
+    assert_eq!(cache::load(&previous, &first.path).unwrap().1, second);
+    assert_eq!(cache::list(dir.path()).unwrap(), vec![third]);
+    assert!(previous.is_dir());
+    assert_eq!(cache::list(&previous).unwrap(), vec![second]);
+    assert_eq!(fs::read_dir(&previous).unwrap().count(), 2);
+}
+
+#[test]
+fn eviction_removes_previous_and_orphaned_baselines() {
+    let (_fixture, mut tree) = fixture();
+    let dir = tempfile::tempdir().unwrap();
+    let previous = dir.path().join("previous");
+    let first = saved(&tree, 1);
+    cache::save(dir.path(), &tree, &first).unwrap();
+    cache::save(dir.path(), &tree, &saved(&tree, 2)).unwrap();
+    let key = cache::key(&first.path);
+    assert!(previous.join(format!("{key}.tree")).is_file());
+    tree.root_path = "C:\\orphan".into();
+    cache::save(&previous, &tree, &saved(&tree, 1)).unwrap();
+    let orphan = cache::key(&saved(&tree, 1).path);
+    for i in 3..13 {
+        tree.root_path = format!("C:\\folder{i}").into();
+        cache::save(dir.path(), &tree, &saved(&tree, i)).unwrap();
+    }
+    for key in [key, orphan] {
+        assert!(!previous.join(format!("{key}.tree")).exists());
+        assert!(!previous.join(format!("{key}.json")).exists());
+    }
+    assert_eq!(cache::list(dir.path()).unwrap().len(), 10);
+    assert!(cache::list(&previous).unwrap().is_empty());
+}
+
+#[test]
+fn interrupted_rotation_cannot_load_a_partial_pair() {
+    let (_fixture, mut tree) = fixture();
+    let dir = tempfile::tempdir().unwrap();
+    let first = saved(&tree, 1);
+    cache::save(dir.path(), &tree, &first).unwrap();
+    tree.nodes[0].size += 1;
+    cache::save(dir.path(), &tree, &saved(&tree, 2)).unwrap();
+    let key = cache::key(&first.path);
+    let previous = dir.path().join("previous");
+    for extension in ["tree", "json"] {
+        fs::remove_file(previous.join(format!("{key}.{extension}"))).unwrap();
+    }
+    fs::rename(
+        dir.path().join(format!("{key}.tree")),
+        previous.join(format!("{key}.tree")),
+    )
+    .unwrap();
+    assert!(cache::load(&previous, &first.path).is_err());
+    assert!(cache::load(dir.path(), &first.path).is_err());
+    assert!(cache::list(dir.path()).unwrap().is_empty());
+    assert!(cache::list(&previous).unwrap().is_empty());
+}
+
+fn comparison_tree(entries: &[(&str, usize, Kind, u64)]) -> Tree {
+    let mut tree = Tree {
+        nodes: vec![scanner::Node {
+            name: "root".into(),
+            parent: None,
+            children: vec![],
+            kind: Kind::Dir,
+            size: 0,
+            files: 0,
+            folders: 0,
+            category: None,
+        }],
+        root_path: "C:\\root".into(),
+        errors: 0,
+    };
+    for &(name, parent, kind, size) in entries {
+        let id = tree.nodes.len();
+        tree.nodes.push(scanner::Node {
+            name: name.into(),
+            parent: Some(parent),
+            children: vec![],
+            kind,
+            size,
+            files: u64::from(kind == Kind::File),
+            folders: 0,
+            category: None,
+        });
+        tree.nodes[parent].children.push(id);
+    }
+    for id in (1..tree.nodes.len()).rev() {
+        let (size, files, folders) = (
+            tree.nodes[id].size,
+            tree.nodes[id].files,
+            tree.nodes[id].folders + u64::from(tree.nodes[id].kind == Kind::Dir),
+        );
+        let parent = tree.nodes[id].parent.unwrap();
+        tree.nodes[parent].size += size;
+        tree.nodes[parent].files += files;
+        tree.nodes[parent].folders += folders;
+    }
+    tree
+}
+
+#[test]
+fn comparison_matches_names_and_kinds_and_scopes_removals() {
+    use crate::changes::Comparison;
+    let previous = comparison_tree(&[
+        ("grown", 0, Kind::File, 10),
+        ("shrunk", 0, Kind::File, 100),
+        ("removed", 0, Kind::File, 7),
+        ("swap", 0, Kind::Dir, 0),
+        ("inside", 4, Kind::File, 9),
+        ("nested", 0, Kind::Dir, 0),
+        ("gone", 6, Kind::File, 4),
+        ("Case", 0, Kind::File, 8),
+        ("empty", 0, Kind::Dir, 0),
+        ("file-to-dir", 0, Kind::File, 3),
+    ]);
+    let current = comparison_tree(&[
+        ("nested", 0, Kind::Dir, 0),
+        ("new", 1, Kind::File, 50),
+        ("grown", 0, Kind::File, 30),
+        ("shrunk", 0, Kind::File, 60),
+        ("swap", 0, Kind::File, 5),
+        ("case", 0, Kind::File, 8),
+        ("empty", 0, Kind::Dir, 0),
+        ("zero", 0, Kind::File, 0),
+        ("file-to-dir", 0, Kind::Dir, 0),
+        ("inside", 9, Kind::File, 2),
+    ]);
+    let comparison = Comparison::new(&current, &previous, 123);
+    let root = comparison.view(&current, 0).unwrap();
+    assert_eq!(root.since, 123);
+    assert_eq!(root.previous_size, Some(previous.nodes[0].size));
+    assert_eq!(
+        root.children
+            .iter()
+            .map(|c| (c.id, c.previous_size))
+            .collect::<Vec<_>>(),
+        vec![
+            (1, Some(4)),
+            (3, Some(10)),
+            (4, Some(100)),
+            (5, None),
+            (6, None),
+            (7, Some(0)),
+            (8, None),
+            (9, None)
+        ]
+    );
+    assert_eq!((root.removed.items, root.removed.bytes), (4, 27));
+    assert_eq!(
+        root.grown
+            .iter()
+            .map(|f| (f.name.as_str(), f.previous_size))
+            .collect::<Vec<_>>(),
+        vec![
+            ("new", None),
+            ("grown", Some(10)),
+            ("case", None),
+            ("swap", None),
+            ("inside", None)
+        ]
+    );
+    assert_eq!(root.grown[0].relative_path, r"nested\new");
+    let nested = comparison.view(&current, 1).unwrap();
+    assert_eq!((nested.removed.items, nested.removed.bytes), (1, 4));
+    assert_eq!(nested.grown[0].relative_path, "new");
+    assert_eq!(comparison.view(&current, 9).unwrap().previous_size, None);
+    assert_eq!(comparison.view(&current, 9).unwrap().removed.items, 0);
+    assert!(comparison.view(&current, 7).unwrap().grown.is_empty());
+    assert!(comparison.view(&current, usize::MAX).is_err());
+    let json = serde_json::to_value(root).unwrap();
+    assert_eq!(json["children"][0]["previousSize"], 4);
+    assert!(json["grown"][0]["previousSize"].is_null());
+}
+
+#[test]
+fn grown_files_are_ranked_by_growth_and_limited_to_fifty() {
+    let names: Vec<_> = (0..70).map(|i| format!("file{i:02}")).collect();
+    let old: Vec<_> = names
+        .iter()
+        .map(|name| (name.as_str(), 0, Kind::File, 1000))
+        .collect();
+    let new: Vec<_> = names
+        .iter()
+        .enumerate()
+        .map(|(i, name)| (name.as_str(), 0, Kind::File, 1000 + i as u64))
+        .collect();
+    let previous = comparison_tree(&old);
+    let current = comparison_tree(&new);
+    let comparison = crate::changes::Comparison::new(&current, &previous, 1);
+    let grown = comparison.view(&current, 0).unwrap().grown;
+    assert_eq!(grown.len(), 50);
+    assert_eq!(grown.first().unwrap().name, "file69");
+    assert_eq!(grown.last().unwrap().name, "file20");
+    assert!(grown.windows(2).all(|pair| pair[0].size > pair[1].size));
+    assert!(comparison.view(&current, 1).unwrap().grown.is_empty());
 }
 
 #[test]
@@ -390,6 +627,8 @@ fn clear_saved_scans_removes_everything() {
     assert!(cache::list(&scans).unwrap().is_empty());
     cache::clear(&scans).unwrap();
     cache::save(&scans, &tree, &saved(&tree, 1)).unwrap();
+    cache::save(&scans, &tree, &saved(&tree, 2)).unwrap();
+    assert_eq!(cache::list(&scans.join("previous")).unwrap().len(), 1);
     fs::write(scans.join("unfinished.tmp"), b"partial").unwrap();
     fs::create_dir(scans.join("leftover")).unwrap();
     fs::write(scans.join("leftover/file"), b"partial").unwrap();
