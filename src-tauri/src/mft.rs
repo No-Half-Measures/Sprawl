@@ -1,5 +1,6 @@
-use crate::scanner::{self, Counters, Kind, Node, Progress, Tree};
+use crate::scanner::{self, Counters, JournalCheckpoint, Kind, Node, Progress, Tree};
 use std::{
+    collections::{BTreeMap, BTreeSet},
     io,
     path::{Path, PathBuf},
     sync::atomic::{AtomicBool, Ordering},
@@ -25,6 +26,7 @@ const CHUNK_SIZE: usize = 4 * 1024 * 1024;
 const IO_ALIGNMENT: usize = 4096;
 const READ_QUEUE_DEPTH: usize = 8;
 const READ_BUFFER_COUNT: usize = 16;
+const MAX_CHANGES: usize = 200_000;
 type Result<T> = std::result::Result<T, &'static str>;
 
 #[derive(Clone)]
@@ -127,6 +129,8 @@ pub(crate) struct Record {
     pub names: Vec<Link>,
     pub size: Option<u64>,
     pub extents: Vec<Extent>,
+    pub attribute_list: Vec<u8>,
+    pub nonresident_attribute_list: bool,
 }
 
 fn bytes(buf: &[u8], offset: usize, len: usize) -> Result<&[u8]> {
@@ -230,6 +234,13 @@ pub(crate) fn parse_record(buf: &mut [u8], number: u64) -> Result<Option<Record>
             None
         };
         match kind {
+            0x20 => {
+                if let Some(value) = value {
+                    record.attribute_list.extend_from_slice(value);
+                } else {
+                    record.nonresident_attribute_list = true;
+                }
+            }
             0x30 => {
                 let value = value.ok_or("Non-resident FILE_NAME")?;
                 bytes(value, 0, 66)?;
@@ -284,6 +295,241 @@ pub(crate) fn parse_record(buf: &mut [u8], number: u64) -> Result<Option<Record>
         }
         offset += len;
     }
+}
+
+fn merge_extension(base: &mut Record, mut extension: Record) {
+    base.names.append(&mut extension.names);
+    base.size = base.size.or(extension.size);
+    base.excluded |= extension.excluded;
+    base.extents.append(&mut extension.extents);
+}
+
+struct Journal {
+    checkpoint: JournalCheckpoint,
+    first_usn: i64,
+    lowest_valid_usn: i64,
+}
+
+fn journal_target(saved: JournalCheckpoint, current: &Journal) -> Result<JournalCheckpoint> {
+    if saved.journal_id != current.checkpoint.journal_id
+        || saved.next_usn < 0
+        || saved.next_usn < current.first_usn
+        || saved.next_usn < current.lowest_valid_usn
+        || saved.next_usn > current.checkpoint.next_usn
+    {
+        return Err("Journal checkpoint unavailable");
+    }
+    Ok(current.checkpoint)
+}
+
+fn parse_usn_buffer(
+    buf: &[u8],
+    start: i64,
+    target: i64,
+    changes: &mut BTreeMap<u64, bool>,
+    cancel: &AtomicBool,
+) -> Result<i64> {
+    let next = u64_at(buf, 0)? as i64;
+    if start < 0 || target < start || next <= start {
+        return Err("Invalid journal continuation");
+    }
+    let mut offset = 8;
+    let mut last = start;
+    while offset < buf.len() {
+        if cancel.load(Ordering::Relaxed) {
+            return Err("Scan cancelled");
+        }
+        let len = u32_at(buf, offset)? as usize;
+        if len < 60 || !len.is_multiple_of(8) {
+            return Err("Invalid USN record length");
+        }
+        let record = bytes(buf, offset, len)?;
+        if u16_at(record, 4)? != 2 || u16_at(record, 6)? != 0 {
+            return Err("Unsupported USN record version");
+        }
+        let usn = u64_at(record, 24)? as i64;
+        if usn < last || usn >= next {
+            return Err("Invalid USN record position");
+        }
+        last = usn;
+        let name_len = usize::from(u16_at(record, 56)?);
+        let name_offset = usize::from(u16_at(record, 58)?);
+        if name_offset < 60 || !name_offset.is_multiple_of(2) || !name_len.is_multiple_of(2) {
+            return Err("Invalid USN filename bounds");
+        }
+        bytes(record, name_offset, name_len)?;
+        if usn < target {
+            let number = u64_at(record, 8)? & REFERENCE_MASK;
+            let created = u32_at(record, 40)? & 0x100 != 0;
+            *changes.entry(number).or_default() |= created;
+            if changes.len() > MAX_CHANGES {
+                return Err("Too many journal changes");
+            }
+        }
+        offset += len;
+    }
+    Ok(next)
+}
+
+fn extension_numbers(record: &Record) -> Result<BTreeSet<u64>> {
+    if record.nonresident_attribute_list {
+        return Err("Non-resident attribute list");
+    }
+    let mut numbers = BTreeSet::new();
+    let mut offset = 0;
+    while offset < record.attribute_list.len() {
+        let entry = bytes(&record.attribute_list, offset, 26)?;
+        let len = usize::from(u16_at(entry, 4)?);
+        if len < 26 {
+            return Err("Invalid attribute list entry");
+        }
+        let entry = bytes(&record.attribute_list, offset, len)?;
+        let name_len = usize::from(entry[6]) * 2;
+        if name_len > 0 {
+            let name_offset = usize::from(entry[7]);
+            if name_offset < 26 {
+                return Err("Invalid attribute list name");
+            }
+            bytes(entry, name_offset, name_len)?;
+        }
+        numbers.insert(u64_at(entry, 16)? & REFERENCE_MASK);
+        offset += len;
+    }
+    numbers.remove(&record.number);
+    Ok(numbers)
+}
+
+fn base_table(previous: &Tree, cancel: &AtomicBool) -> Result<BTreeMap<u64, Record>> {
+    if previous.records.len() != previous.nodes.len()
+        || previous.records.first() != Some(&5)
+        || previous.errors != 0
+    {
+        return Err("Previous MFT records unavailable");
+    }
+    let mut bases = BTreeMap::<u64, Record>::new();
+    let mut stack = vec![0];
+    while let Some(id) = stack.pop() {
+        if cancel.load(Ordering::Relaxed) {
+            return Err("Scan cancelled");
+        }
+        let node = &previous.nodes[id];
+        let number = previous.records[id];
+        let directory = node.kind == Kind::Dir;
+        let record = bases.entry(number).or_insert_with(|| Record {
+            number,
+            directory,
+            size: (!directory).then_some(node.size),
+            ..Default::default()
+        });
+        if node.kind == Kind::Other
+            || record.directory != directory
+            || (directory && !record.names.is_empty())
+            || (!directory && record.size != Some(node.size))
+        {
+            return Err("Inconsistent previous MFT records");
+        }
+        if let Some(parent) = node.parent {
+            record.names.push(Link {
+                parent: previous.records[parent],
+                name: node.name.clone(),
+                category: node.category.unwrap_or(0),
+            });
+        }
+        stack.extend(&node.children);
+    }
+    Ok(bases)
+}
+
+fn patch_tree(
+    previous: &Tree,
+    changes: &BTreeMap<u64, bool>,
+    cancel: &AtomicBool,
+    mut fetch: impl FnMut(u64) -> Result<Option<Record>>,
+) -> Result<Tree> {
+    if changes.len() > MAX_CHANGES {
+        return Err("Too many journal changes");
+    }
+    let mut bases = base_table(previous, cancel)?;
+    let directories: BTreeSet<_> = bases
+        .values()
+        .filter(|r| r.directory)
+        .map(|r| r.number)
+        .collect();
+    let mut patched = BTreeSet::new();
+    for &number in changes.keys() {
+        if cancel.load(Ordering::Relaxed) {
+            return Err("Scan cancelled");
+        }
+        if patched.contains(&number) {
+            continue;
+        }
+        let Some(mut record) = fetch(number)? else {
+            bases.remove(&number);
+            continue;
+        };
+        if let Some(base) = record.base {
+            bases.remove(&number);
+            if patched.contains(&base) {
+                continue;
+            }
+            record = fetch(base)?.ok_or("Missing extension base")?;
+            if record.number != base || record.base.is_some() {
+                return Err("Invalid extension base");
+            }
+        }
+        for extension in extension_numbers(&record)? {
+            if cancel.load(Ordering::Relaxed) {
+                return Err("Scan cancelled");
+            }
+            let extension = fetch(extension)?.ok_or("Missing extension record")?;
+            if extension.base != Some(record.number)
+                || !extension.attribute_list.is_empty()
+                || extension.nonresident_attribute_list
+            {
+                return Err("Invalid extension record");
+            }
+            bases.remove(&extension.number);
+            merge_extension(&mut record, extension);
+        }
+        patched.insert(record.number);
+        bases.insert(record.number, record);
+    }
+    let tree = build_tree(bases.into_values(), previous.root_path.clone(), cancel)
+        .ok_or("Cannot rebuild MFT tree")?;
+    for (node, &number) in tree.nodes.iter().zip(&tree.records) {
+        if cancel.load(Ordering::Relaxed) {
+            return Err("Scan cancelled");
+        }
+        if node.kind == Kind::Dir
+            && !directories.contains(&number)
+            && changes.get(&number) != Some(&true)
+        {
+            return Err("Unknown directory children");
+        }
+    }
+    Ok(tree)
+}
+
+fn parse_fetched_record(buf: &mut [u8], number: u64) -> Result<Option<Record>> {
+    let usa = usize::from(u16_at(buf, 4)?);
+    let count = usize::from(u16_at(buf, 6)?);
+    if buf.len() < 48
+        || !buf.len().is_multiple_of(512)
+        || count != buf.len() / 512 + 1
+        || usa < 42
+        || !usa.is_multiple_of(2)
+        || usa + count * 2 > 510
+    {
+        return Err("Invalid fetched update sequence array");
+    }
+    let marker = u16_at(buf, usa)?;
+    // FSCTL can return a record with sector fixups already restored.
+    if (1..count).all(|sector| u16_at(buf, sector * 512 - 2) == u16_at(buf, usa + sector * 2)) {
+        for sector in 1..count {
+            buf[sector * 512 - 2..sector * 512].copy_from_slice(&marker.to_le_bytes());
+        }
+    }
+    parse_record(buf, number)
 }
 
 fn decode_runs(attr: &[u8], extents: &mut Vec<Extent>) -> Result<()> {
@@ -363,7 +609,7 @@ pub(crate) fn build_tree(
             bases[number].get_or_insert(record);
         }
     }
-    for mut extension in extensions {
+    for extension in extensions {
         if cancel.load(Ordering::Relaxed) {
             return None;
         }
@@ -372,10 +618,7 @@ pub(crate) fn build_tree(
             .and_then(|number| bases.get_mut(number))
             .and_then(Option::as_mut)
         {
-            base.names.append(&mut extension.names);
-            base.size = base.size.or(extension.size);
-            base.excluded |= extension.excluded;
-            base.extents.append(&mut extension.extents);
+            merge_extension(base, extension);
         }
     }
     let root = bases.get(5)?.as_ref()?;
@@ -424,6 +667,8 @@ pub(crate) fn build_tree(
         }],
         root_path,
         errors: 0,
+        records: vec![5],
+        checkpoint: None,
     };
     let mut visited = vec![false; bases.len()];
     visited[5] = true;
@@ -469,6 +714,7 @@ pub(crate) fn build_tree(
                 folders: 0,
                 category,
             });
+            tree.records.push(number as u64);
             tree.nodes[parent].children.push(id);
             if record.directory {
                 queue.push((id, number));
@@ -476,6 +722,221 @@ pub(crate) fn build_tree(
         }
     }
     scanner::finish(&mut tree, cancel).then_some(tree)
+}
+
+#[cfg(windows)]
+fn control(
+    file: &File,
+    code: u32,
+    input: &[u8],
+    output: &mut [u8],
+    cancel: &AtomicBool,
+) -> io::Result<usize> {
+    use windows_sys::Win32::{
+        Foundation::WAIT_TIMEOUT,
+        System::{IO::DeviceIoControl, Threading::WaitForSingleObject},
+    };
+
+    if cancel.load(Ordering::Relaxed) {
+        return Err(io::Error::new(io::ErrorKind::Interrupted, "Scan cancelled"));
+    }
+    // SAFETY: create an unnamed event, owned until the operation completes.
+    let event = unsafe { CreateEventW(std::ptr::null(), 1, 0, std::ptr::null()) };
+    if event.is_null() {
+        return Err(io::Error::last_os_error());
+    }
+    // SAFETY: CreateEventW returned a unique handle.
+    let event = unsafe { OwnedHandle::from_raw_handle(event) };
+    let mut overlapped = OVERLAPPED {
+        hEvent: event.as_raw_handle(),
+        ..Default::default()
+    };
+    let mut returned = 0;
+    // SAFETY: all buffers and the OVERLAPPED stay borrowed at fixed addresses
+    // until GetOverlappedResult drains the operation, including cancellation.
+    let result = unsafe {
+        DeviceIoControl(
+            file.as_raw_handle(),
+            code,
+            input.as_ptr().cast(),
+            input.len() as u32,
+            output.as_mut_ptr().cast(),
+            output.len() as u32,
+            &mut returned,
+            &mut overlapped,
+        )
+    };
+    if result == 0 {
+        let error = io::Error::last_os_error();
+        if error.raw_os_error() != Some(ERROR_IO_PENDING as i32) {
+            return Err(error);
+        }
+    }
+    // SAFETY: the event, volume, buffers and OVERLAPPED remain live throughout.
+    unsafe {
+        while WaitForSingleObject(event.as_raw_handle(), 20) == WAIT_TIMEOUT {
+            if cancel.load(Ordering::Relaxed) {
+                CancelIoEx(file.as_raw_handle(), &overlapped);
+                break;
+            }
+        }
+        if GetOverlappedResult(file.as_raw_handle(), &overlapped, &mut returned, 1) == 0 {
+            return Err(io::Error::last_os_error());
+        }
+    }
+    if returned as usize > output.len() {
+        return Err(io::Error::other("Invalid control output length"));
+    }
+    Ok(returned as usize)
+}
+
+#[cfg(windows)]
+fn query_journal(file: &File, cancel: &AtomicBool) -> std::result::Result<Journal, String> {
+    use windows_sys::Win32::System::Ioctl::FSCTL_QUERY_USN_JOURNAL;
+
+    let mut buffer = [0; 80];
+    let len = control(file, FSCTL_QUERY_USN_JOURNAL, &[], &mut buffer, cancel)
+        .map_err(|e| e.to_string())?;
+    let buffer = bytes(&buffer[..len], 0, 56)?;
+    Ok(Journal {
+        checkpoint: JournalCheckpoint {
+            journal_id: u64_at(buffer, 0)?,
+            next_usn: u64_at(buffer, 16)? as i64,
+        },
+        first_usn: u64_at(buffer, 8)? as i64,
+        lowest_valid_usn: u64_at(buffer, 24)? as i64,
+    })
+}
+
+fn parse_file_record_output(
+    buf: &mut [u8],
+    number: u64,
+    record_size: usize,
+) -> Result<Option<Record>> {
+    if u64_at(buf, 0)? & REFERENCE_MASK != number {
+        return Ok(None);
+    }
+    if u32_at(buf, 8)? as usize != record_size {
+        return Err("Unexpected fetched record size");
+    }
+    let record = buf
+        .get_mut(12..12 + record_size)
+        .ok_or("Truncated fetched record")?;
+    parse_fetched_record(record, number)
+}
+
+#[cfg(windows)]
+pub(crate) fn rescan_volume(
+    root_path: &Path,
+    previous: &Tree,
+    cancel: &AtomicBool,
+    report: &(impl Fn(Progress) + Sync),
+) -> std::result::Result<Option<Tree>, String> {
+    use windows_sys::Win32::System::Ioctl::{
+        FSCTL_GET_NTFS_FILE_RECORD, FSCTL_GET_NTFS_VOLUME_DATA, FSCTL_READ_USN_JOURNAL,
+        READ_USN_JOURNAL_DATA_V0,
+    };
+
+    let result = (|| {
+        let saved = previous.checkpoint.ok_or("Missing journal checkpoint")?;
+        let drive = scanner::drive_letter(root_path).ok_or("Not a local drive root")?;
+        let volume = open_mft(Path::new(&format!(r"\\.\{}:", char::from(drive))), 0)
+            .map_err(|e| e.to_string())?;
+        let target = journal_target(saved, &query_journal(&volume, cancel)?)?;
+        let mut changes = BTreeMap::new();
+        let mut buffer = vec![0; 65536];
+        let mut next = saved.next_usn;
+        let counters = Counters::new();
+        while next < target.next_usn {
+            let request = READ_USN_JOURNAL_DATA_V0 {
+                StartUsn: next,
+                ReasonMask: u32::MAX,
+                ReturnOnlyOnClose: 0,
+                Timeout: 0,
+                BytesToWaitFor: 0,
+                UsnJournalID: saved.journal_id,
+            };
+            // SAFETY: this C structure has no padding; every field is initialized.
+            // Borrowing its bytes preserves the alignment required by the FSCTL.
+            let request = unsafe {
+                std::slice::from_raw_parts(
+                    (&request as *const READ_USN_JOURNAL_DATA_V0).cast::<u8>(),
+                    std::mem::size_of::<READ_USN_JOURNAL_DATA_V0>(),
+                )
+            };
+            let len = control(
+                &volume,
+                FSCTL_READ_USN_JOURNAL,
+                request,
+                &mut buffer,
+                cancel,
+            )
+            .map_err(|e| e.to_string())?;
+            next = parse_usn_buffer(&buffer[..len], next, target.next_usn, &mut changes, cancel)?;
+            counters.flush(&mut Progress::default(), root_path, report);
+        }
+        let mut geometry = [0; 96];
+        let len = control(
+            &volume,
+            FSCTL_GET_NTFS_VOLUME_DATA,
+            &[],
+            &mut geometry,
+            cancel,
+        )
+        .map_err(|e| e.to_string())?;
+        let geometry = bytes(&geometry[..len], 0, 96)?;
+        let record_size = u32_at(geometry, 48)? as usize;
+        if !(512..=65536).contains(&record_size) || !record_size.is_power_of_two() {
+            return Err("Invalid fetched record size".into());
+        }
+        let record_count = u64_at(geometry, 56)? / record_size as u64;
+        if previous
+            .records
+            .iter()
+            .any(|&number| number >= record_count)
+        {
+            return Err("Previous record outside MFT".into());
+        }
+        let mut buffer = vec![0; record_size + 16];
+        let mut tree = patch_tree(previous, &changes, cancel, |number| {
+            let len = control(
+                &volume,
+                FSCTL_GET_NTFS_FILE_RECORD,
+                &number.to_le_bytes(),
+                &mut buffer,
+                cancel,
+            )
+            .map_err(|_| "Cannot fetch MFT record")?;
+            let record = parse_file_record_output(&mut buffer[..len], number, record_size)?;
+            let mut counts = Progress::default();
+            if let Some(record) = &record {
+                if record.directory {
+                    counts.folders = 1;
+                } else {
+                    counts.files = 1;
+                    counts.bytes = record.size.unwrap_or(0);
+                }
+            }
+            counters.flush(&mut counts, root_path, report);
+            Ok(record)
+        })?;
+        journal_target(saved, &query_journal(&volume, cancel)?)?;
+        tree.checkpoint = Some(target);
+        let root = &tree.nodes[0];
+        report(Progress {
+            files: root.files,
+            folders: root.folders,
+            bytes: root.size,
+            errors: tree.errors,
+            current_path: root_path.to_string_lossy().into_owned(),
+        });
+        Ok(Some(tree))
+    })();
+    if cancel.load(Ordering::Relaxed) {
+        Ok(None)
+    } else {
+        result
+    }
 }
 
 #[cfg(windows)]
@@ -495,7 +956,15 @@ pub(crate) fn scan_volume(
         FILE_FLAG_NO_BUFFERING,
     )
     .map_err(|e| format!("Cannot open volume: {e}"))?;
-    read_mft(&volume, root_path, cancel, report)
+    let checkpoint = query_journal(&volume, cancel)
+        .ok()
+        .map(|journal| journal.checkpoint);
+    read_mft(&volume, root_path, cancel, report).map(|tree| {
+        tree.map(|mut tree| {
+            tree.checkpoint = checkpoint;
+            tree
+        })
+    })
 }
 
 #[cfg(windows)]
@@ -1170,6 +1639,387 @@ mod tests {
 
     fn tree(records: Vec<Record>) -> Tree {
         build_tree(records, PathBuf::from("volume"), &AtomicBool::new(false)).unwrap()
+    }
+
+    fn file(number: u64, parent: u64, name: &str, size: usize) -> Record {
+        parsed(
+            number,
+            1,
+            0,
+            &[
+                filename(parent, name, 1),
+                resident(0x80, &vec![0; size], ""),
+            ],
+        )
+    }
+
+    fn assert_same_tree(actual: &Tree, expected: &Tree) {
+        assert_eq!(
+            serde_json::to_value(&actual.nodes).unwrap(),
+            serde_json::to_value(&expected.nodes).unwrap()
+        );
+        assert_eq!(actual.records, expected.records);
+    }
+
+    #[test]
+    fn journal_patch_matches_full_tree_and_replays_idempotently() {
+        let previous = tree(vec![
+            root(),
+            directory(24, 5, "before"),
+            directory(25, 5, "target"),
+            file(26, 24, "resize.txt", 7),
+            file(27, 5, "delete.txt", 3),
+            file(28, 5, "exclude.txt", 5),
+            file(29, 5, "linked.txt", 9),
+            file(33, 24, "unchanged.txt", 11),
+        ]);
+        let unchanged = tree(
+            base_table(&previous, &AtomicBool::new(false))
+                .unwrap()
+                .into_values()
+                .collect(),
+        );
+        assert_same_tree(&unchanged, &previous);
+        let mut excluded = file(28, 5, "exclude.txt", 5);
+        excluded.excluded = true;
+        let linked = parsed(
+            29,
+            1,
+            0,
+            &[
+                filename(5, "linked.txt", 1),
+                filename(25, "alias.MP4", 1),
+                resident(0x80, &[0; 9], ""),
+            ],
+        );
+        let mut updated: BTreeMap<_, _> = [
+            root(),
+            directory(24, 25, "after"),
+            directory(25, 5, "target"),
+            file(26, 24, "resize.txt", 17),
+            excluded,
+            linked,
+            directory(30, 5, "new directory"),
+            file(31, 30, "child.rs", 13),
+            file(32, 5, "created.txt", 2),
+            file(33, 24, "unchanged.txt", 11),
+        ]
+        .into_iter()
+        .map(|r| (r.number, r))
+        .collect();
+        let changes = [
+            (24, false),
+            (26, false),
+            (27, false),
+            (28, false),
+            (29, false),
+            (30, true),
+            (31, true),
+            (32, true),
+        ]
+        .into();
+        let cancel = AtomicBool::new(false);
+        let patched = patch_tree(&previous, &changes, &cancel, |number| {
+            Ok(updated.remove(&number))
+        })
+        .unwrap();
+        let full = tree(vec![
+            root(),
+            directory(24, 25, "after"),
+            directory(25, 5, "target"),
+            file(26, 24, "resize.txt", 17),
+            parsed(
+                28,
+                1,
+                0,
+                &[
+                    filename(5, "exclude.txt", 1),
+                    resident(0xc0, &0xa000000c_u32.to_le_bytes(), ""),
+                ],
+            ),
+            parsed(
+                29,
+                1,
+                0,
+                &[
+                    filename(5, "linked.txt", 1),
+                    filename(25, "alias.MP4", 1),
+                    resident(0x80, &[0; 9], ""),
+                ],
+            ),
+            directory(30, 5, "new directory"),
+            file(31, 30, "child.rs", 13),
+            file(32, 5, "created.txt", 2),
+            file(33, 24, "unchanged.txt", 11),
+        ]);
+        assert_same_tree(&patched, &full);
+        let mut current = base_table(&full, &cancel).unwrap();
+        let replayed = patch_tree(&patched, &changes, &cancel, |number| {
+            Ok(current.remove(&number))
+        })
+        .unwrap();
+        assert_same_tree(&replayed, &full);
+    }
+
+    fn usn_record(number: u64, usn: i64, reason: u32) -> Vec<u8> {
+        let mut buf = vec![0; 64];
+        put32(&mut buf, 0, 64);
+        put16(&mut buf, 4, 2);
+        put64(&mut buf, 8, number | (7 << 48));
+        put64(&mut buf, 24, usn as u64);
+        put32(&mut buf, 40, reason);
+        put16(&mut buf, 56, 2);
+        put16(&mut buf, 58, 60);
+        buf[60] = b'a';
+        buf
+    }
+
+    #[test]
+    fn usn_buffers_collect_changes_only_before_target() {
+        let cancel = AtomicBool::new(false);
+        let mut buf = 300_i64.to_le_bytes().to_vec();
+        buf.extend(usn_record(24, 100, 1));
+        buf.extend(usn_record(24, 164, 0x100));
+        buf.extend(usn_record(25, 228, 0x100));
+        let mut changes = BTreeMap::new();
+        assert_eq!(
+            parse_usn_buffer(&buf, 100, 228, &mut changes, &cancel).unwrap(),
+            300
+        );
+        assert_eq!(changes, [(24, true)].into());
+        assert_eq!(
+            parse_usn_buffer(&300_i64.to_le_bytes(), 228, 300, &mut changes, &cancel).unwrap(),
+            300
+        );
+        assert!(parse_usn_buffer(&100_i64.to_le_bytes(), 100, 200, &mut changes, &cancel).is_err());
+        assert!(parse_usn_buffer(&buf, 101, 228, &mut changes, &cancel).is_err());
+        cancel.store(true, Ordering::Relaxed);
+        assert!(parse_usn_buffer(&buf, 100, 228, &mut changes, &cancel).is_err());
+    }
+
+    #[test]
+    fn usn_garbage_truncation_and_other_versions_require_full_scan() {
+        let cancel = AtomicBool::new(false);
+        let mut valid = 164_i64.to_le_bytes().to_vec();
+        valid.extend(usn_record(24, 100, 1));
+        for len in (0..8).chain(9..valid.len()) {
+            assert!(
+                parse_usn_buffer(&valid[..len], 100, 164, &mut BTreeMap::new(), &cancel).is_err(),
+                "length {len}"
+            );
+        }
+        for (offset, width, value) in [
+            (8, 4, 0),
+            (8, 4, 63),
+            (8, 4, u32::MAX),
+            (12, 2, 3),
+            (12, 2, 4),
+            (14, 2, 1),
+            (64, 2, 3),
+            (64, 2, 100),
+            (66, 2, 0),
+            (66, 2, 61),
+            (66, 2, 65535),
+        ] {
+            let mut buf = valid.clone();
+            if width == 2 {
+                put16(&mut buf, offset, value as u16);
+            } else {
+                put32(&mut buf, offset, value);
+            }
+            assert!(
+                parse_usn_buffer(&buf, 100, 164, &mut BTreeMap::new(), &cancel).is_err(),
+                "offset {offset}"
+            );
+        }
+        for seed in 0..256_u32 {
+            let mut random = seed + 1;
+            let mut buf = vec![0; 256];
+            for byte in &mut buf {
+                random = random.wrapping_mul(1664525).wrapping_add(1013904223);
+                *byte = (random >> 24) as u8;
+            }
+            assert!(parse_usn_buffer(&buf, 100, 164, &mut BTreeMap::new(), &cancel).is_err());
+        }
+        for offset in 0..valid.len() {
+            let mut buf = valid.clone();
+            buf[offset] ^= 255;
+            let _ = parse_usn_buffer(&buf, 100, 164, &mut BTreeMap::new(), &cancel);
+        }
+    }
+
+    #[test]
+    fn journal_gaps_and_unknown_directory_children_require_full_scan() {
+        let saved = JournalCheckpoint {
+            journal_id: 7,
+            next_usn: 100,
+        };
+        let current = Journal {
+            checkpoint: JournalCheckpoint {
+                next_usn: 200,
+                ..saved
+            },
+            first_usn: 50,
+            lowest_valid_usn: 0,
+        };
+        assert_eq!(journal_target(saved, &current).unwrap(), current.checkpoint);
+        for checkpoint in [
+            JournalCheckpoint {
+                journal_id: 8,
+                ..saved
+            },
+            JournalCheckpoint {
+                next_usn: 49,
+                ..saved
+            },
+            JournalCheckpoint {
+                next_usn: 201,
+                ..saved
+            },
+            JournalCheckpoint {
+                next_usn: -1,
+                ..saved
+            },
+        ] {
+            assert!(journal_target(checkpoint, &current).is_err());
+        }
+        let discontinuous = Journal {
+            lowest_valid_usn: 101,
+            ..current
+        };
+        assert!(journal_target(saved, &discontinuous).is_err());
+        let cancel = AtomicBool::new(false);
+        let previous = tree(vec![root()]);
+        assert!(
+            patch_tree(&previous, &[(24, false)].into(), &cancel, |_| Ok(Some(
+                directory(24, 5, "unknown")
+            )))
+            .is_err()
+        );
+        assert!(
+            patch_tree(&previous, &[(24, true)].into(), &cancel, |_| Ok(Some(
+                directory(24, 5, "created")
+            )))
+            .is_ok()
+        );
+        assert!(
+            patch_tree(&previous, &[(24, false)].into(), &cancel, |_| Ok(Some(
+                directory(24, 99, "unreachable")
+            )))
+            .is_ok()
+        );
+        let too_many = (0..=MAX_CHANGES as u64)
+            .map(|number| (number, false))
+            .collect();
+        assert!(
+            patch_tree(&previous, &too_many, &cancel, |_| panic!(
+                "Must not fetch records"
+            ))
+            .is_err()
+        );
+        cancel.store(true, Ordering::Relaxed);
+        assert!(
+            patch_tree(&previous, &BTreeMap::new(), &cancel, |_| panic!(
+                "Cancelled"
+            ))
+            .is_err()
+        );
+    }
+
+    #[test]
+    fn resident_attribute_lists_fetch_extensions_with_full_scan_merge_rules() {
+        let mut list = vec![0; 64];
+        for (offset, number) in [(0, 24), (32, 40)] {
+            put32(&mut list, offset, 0x30);
+            put16(&mut list, offset + 4, 32);
+            put64(&mut list, offset + 16, number | (7 << 48));
+        }
+        let base = || parsed(24, 1, 0, &[resident(0x20, &list, "")]);
+        let extension = || {
+            parsed(
+                40,
+                1,
+                24 | (7 << 48),
+                &[filename(5, "extended.txt", 1), resident(0x80, &[0; 19], "")],
+            )
+        };
+        let previous = tree(vec![
+            root(),
+            file(24, 5, "old.txt", 1),
+            file(40, 5, "reused.txt", 3),
+        ]);
+        let cancel = AtomicBool::new(false);
+        for changed in [24, 40] {
+            let actual =
+                patch_tree(
+                    &previous,
+                    &[(changed, false)].into(),
+                    &cancel,
+                    |number| match number {
+                        24 => Ok(Some(base())),
+                        40 => Ok(Some(extension())),
+                        _ => panic!("Unexpected record"),
+                    },
+                )
+                .unwrap();
+            assert_same_tree(&actual, &tree(vec![root(), base(), extension()]));
+        }
+        let mut nonresident_list = nonresident(2000, 0, 0, &[0x11, 1, 20, 0]);
+        put32(&mut nonresident_list, 0, 0x20);
+        let record = parsed(24, 1, 0, &[filename(5, "list.txt", 1), nonresident_list]);
+        assert!(record.nonresident_attribute_list);
+        assert_eq!(tree(vec![root(), record]).nodes.len(), 2);
+        assert!(
+            patch_tree(&previous, &[(24, false)].into(), &cancel, |_| Ok(Some(
+                Record {
+                    number: 24,
+                    nonresident_attribute_list: true,
+                    ..Default::default()
+                }
+            )))
+            .is_err()
+        );
+        for len in 1..list.len() {
+            if len == 32 {
+                continue;
+            }
+            let malformed = Record {
+                attribute_list: list[..len].to_vec(),
+                ..Default::default()
+            };
+            assert!(extension_numbers(&malformed).is_err(), "length {len}");
+        }
+    }
+
+    #[test]
+    fn fetched_records_accept_raw_or_restored_fixups_and_detect_deletion() {
+        let raw = record_buf(
+            1,
+            0,
+            &[filename(5, "file.txt", 1), resident(0x80, &[0; 7], "")],
+        );
+        let mut restored = raw.clone();
+        parse_record(&mut restored, 24).unwrap();
+        for record in [raw, restored, record_buf(0, 0, &[])] {
+            let mut output = vec![0; 12];
+            put64(&mut output, 0, 24 | (7 << 48));
+            put32(&mut output, 8, 1024);
+            output.extend(record);
+            assert!(
+                parse_file_record_output(&mut output.clone(), 25, 1024)
+                    .unwrap()
+                    .is_none()
+            );
+            assert!(parse_file_record_output(&mut output.clone(), 24, 512).is_err());
+            for len in 0..output.len() {
+                assert!(parse_file_record_output(&mut output[..len].to_vec(), 24, 1024).is_err());
+            }
+            let parsed = parse_file_record_output(&mut output, 24, 1024).unwrap();
+            if let Some(parsed) = parsed {
+                assert_eq!(parsed.names[0].name, "file.txt");
+                assert_eq!(parsed.size, Some(7));
+            }
+        }
     }
 
     fn image(fragmented: bool) -> Vec<u8> {

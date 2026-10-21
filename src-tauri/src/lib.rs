@@ -372,7 +372,24 @@ fn start_scan(
             }
             return;
         }
-        let result = scanner::scan(&PathBuf::from(path), &cancel, |progress| {
+        let path = PathBuf::from(path);
+        let previous = {
+            #[cfg(windows)]
+            {
+                scanner::drive_letter(&scanner::strip_verbatim_prefix(&path)).and_then(|_| {
+                    let dir = scans_dir(&app).ok()?;
+                    let _cache = state.cache.lock().ok()?;
+                    cache::load(&dir, &path.to_string_lossy())
+                        .ok()
+                        .map(|(tree, _)| tree)
+                })
+            }
+            #[cfg(not(windows))]
+            {
+                None
+            }
+        };
+        let result = scanner::scan(&path, previous.as_ref(), &cancel, |progress| {
             if !cancel.load(Ordering::Relaxed) {
                 let _ = app.emit(
                     "scan-progress",
@@ -752,32 +769,12 @@ fn open_folder(node_id: usize, state: State<'_, AppState>) -> Result<(), String>
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
-    let result = tauri::Builder::default()
-        .plugin(tauri_plugin_opener::init())
-        .plugin(tauri_plugin_dialog::init())
-        .manage(AppState {
-            launch_path: Mutex::new(shell::launch_path(std::env::args().skip(1))),
-            ..Default::default()
-        })
-        .setup(|app| {
-            if cfg!(windows)
-                && settings_path(app.handle())
-                    .map(|path| admin::read_settings(&path).always_elevate)
-                    .unwrap_or(false)
-                && !admin::elevated()
-                && !std::env::args_os().any(|arg| arg == "--elevated")
-            {
-                match admin::relaunch() {
-                    Ok(()) => app.handle().exit(0),
-                    Err(_) => app
-                        .state::<AppState>()
-                        .admin_declined
     #[cfg(windows)]
     if let Err(error) = admin::wait_for_parent() {
         eprintln!("{error}");
         return;
     }
-                        .store(true, Ordering::Relaxed),
+    let result = tauri::Builder::default()
         .plugin(tauri_plugin_single_instance::init(|app, args, _cwd| {
             if let Some(window) = app.get_webview_window("main") {
                 let _ = window.unminimize();
@@ -795,18 +792,40 @@ pub fn run() {
                 }
             }
         }))
-                }
-            }
-            Ok(())
+        .plugin(tauri_plugin_opener::init())
+        .plugin(tauri_plugin_dialog::init())
+        .manage(AppState {
+            launch_path: Mutex::new(shell::launch_path(std::env::args().skip(1))),
+            ..Default::default()
         })
+        .setup(|app| {
             #[cfg(windows)]
             if admin::elevated()
                 && let Err(error) = shell::allow_scan_requests(&app.config().identifier)
             {
                 eprintln!("{error}");
             }
+            if cfg!(windows)
+                && settings_path(app.handle())
+                    .map(|path| admin::read_settings(&path).always_elevate)
+                    .unwrap_or(false)
+                && !admin::elevated()
+                && !std::env::args_os().any(|arg| arg == "--elevated")
+            {
+                match admin::relaunch() {
+                    Ok(()) => app.handle().exit(0),
+                    Err(_) => app
+                        .state::<AppState>()
+                        .admin_declined
+                        .store(true, Ordering::Relaxed),
+                }
+            }
+            Ok(())
+        })
         .invoke_handler(tauri::generate_handler![
             admin_status,
+            set_context_menu,
+            take_launch_path,
             set_always_elevate,
             restart_as_admin,
             list_drives,
@@ -824,8 +843,6 @@ pub fn run() {
             get_node_path,
             reveal_in_explorer,
             open_folder
-            set_context_menu,
-            take_launch_path,
         ])
         .run(tauri::generate_context!());
     if let Err(error) = result {

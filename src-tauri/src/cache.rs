@@ -9,7 +9,7 @@ use std::{
 };
 
 const MAGIC: &[u8; 8] = b"DISKMAP\0";
-pub const FORMAT_VERSION: u32 = 2;
+pub const FORMAT_VERSION: u32 = 3;
 const OPEN_ERROR: &str = "This saved scan can't be opened. Scan again to refresh it.";
 
 #[derive(Serialize, Deserialize)]
@@ -50,15 +50,16 @@ pub fn key(path: &str) -> String {
     format!("{hash:016x}")
 }
 
-fn header(reader: &mut impl Read) -> io::Result<()> {
+fn header(reader: &mut impl Read) -> io::Result<u32> {
     let mut magic = [0; 8];
     let mut version = [0; 4];
     reader.read_exact(&mut magic)?;
     reader.read_exact(&mut version)?;
-    if &magic != MAGIC || u32::from_le_bytes(version) != FORMAT_VERSION {
+    let version = u32::from_le_bytes(version);
+    if &magic != MAGIC || !(2..=FORMAT_VERSION).contains(&version) {
         return Err(io::Error::new(io::ErrorKind::InvalidData, OPEN_ERROR));
     }
-    Ok(())
+    Ok(version)
 }
 
 fn remove(dir: &Path, key: &str) {
@@ -87,11 +88,11 @@ pub fn list(dir: &Path) -> io::Result<Vec<SavedScan>> {
         });
         match meta {
             Ok(meta)
-                if meta.version == FORMAT_VERSION
+                if (2..=FORMAT_VERSION).contains(&meta.version)
                     && key(&meta.path) == stem
                     && File::open(path.with_extension("tree"))
                         .and_then(|mut f| header(&mut f))
-                        .is_ok() =>
+                        .is_ok_and(|version| version == meta.version) =>
             {
                 saved.push(meta)
             }
@@ -156,6 +157,22 @@ pub fn save(dir: &Path, tree: &Tree, meta: &SavedScan) -> io::Result<()> {
         bincode::config::standard(),
     )
     .map_err(io::Error::other)?;
+    if !tree.records.is_empty() && tree.records.len() != tree.nodes.len() {
+        return Err(io::Error::new(io::ErrorKind::InvalidData, OPEN_ERROR));
+    }
+    let records: Vec<_> = tree
+        .records
+        .iter()
+        .enumerate()
+        .filter(|(id, _)| reachable[*id])
+        .map(|(_, &number)| number)
+        .collect();
+    bincode::serde::encode_into_std_write(
+        (records, tree.checkpoint),
+        &mut writer,
+        bincode::config::standard(),
+    )
+    .map_err(io::Error::other)?;
     for (id, node) in tree.nodes.iter().enumerate() {
         if !reachable[id] {
             continue;
@@ -214,7 +231,14 @@ pub fn save(dir: &Path, tree: &Tree, meta: &SavedScan) -> io::Result<()> {
     fs::rename(temp, dir.join(format!("{key}.tree")))?;
     let temp = dir.join(format!("{key}.json.tmp"));
     let mut writer = BufWriter::new(File::create(&temp)?);
-    serde_json::to_writer(&mut writer, meta).map_err(io::Error::other)?;
+    serde_json::to_writer(
+        &mut writer,
+        &SavedScan {
+            version: FORMAT_VERSION,
+            ..meta.clone()
+        },
+    )
+    .map_err(io::Error::other)?;
     writer.flush()?;
     writer.get_ref().sync_all()?;
     drop(writer);
@@ -253,13 +277,16 @@ pub fn load(dir: &Path, path: &str) -> Result<(Tree, SavedScan), String> {
     let result = (|| -> Result<_, Box<dyn std::error::Error>> {
         let meta: SavedScan =
             serde_json::from_reader(BufReader::new(File::open(dir.join(format!("{key}.json")))?))?;
-        if meta.version != FORMAT_VERSION || self::key(&meta.path) != key {
+        if !(2..=FORMAT_VERSION).contains(&meta.version) || self::key(&meta.path) != key {
             return Err(OPEN_ERROR.into());
         }
         let mut reader = BufReader::new(File::open(dir.join(format!("{key}.tree")))?);
-        header(&mut reader)?;
+        let version = header(&mut reader)?;
+        if version != meta.version {
+            return Err(OPEN_ERROR.into());
+        }
         let bytes = zstd::stream::decode_all(reader)?;
-        let tree = decode(&bytes)?;
+        let tree = decode(&bytes, version)?;
         if !valid(&tree) || self::key(&tree.root_path.to_string_lossy()) != key {
             return Err(OPEN_ERROR.into());
         }
@@ -277,7 +304,7 @@ pub fn load(dir: &Path, path: &str) -> Result<(Tree, SavedScan), String> {
     })
 }
 
-fn decode(mut bytes: &[u8]) -> Result<Tree, bincode::error::DecodeError> {
+fn decode(mut bytes: &[u8], version: u32) -> Result<Tree, bincode::error::DecodeError> {
     fn read<T: serde::de::DeserializeOwned>(
         bytes: &mut &[u8],
     ) -> Result<T, bincode::error::DecodeError> {
@@ -289,6 +316,11 @@ fn decode(mut bytes: &[u8]) -> Result<Tree, bincode::error::DecodeError> {
     if count > bytes.len() {
         return Err(bincode::error::DecodeError::Other(OPEN_ERROR));
     }
+    let (records, checkpoint) = if version >= 3 {
+        read(&mut bytes)?
+    } else {
+        (vec![], None)
+    };
     let mut nodes = Vec::with_capacity(count);
     for _ in 0..count {
         let node: DiskNode = read(&mut bytes)?;
@@ -316,16 +348,44 @@ fn decode(mut bytes: &[u8]) -> Result<Tree, bincode::error::DecodeError> {
         nodes,
         root_path,
         errors,
+        records,
+        checkpoint,
     })
 }
 
 fn valid(tree: &Tree) -> bool {
+    if (tree.records.is_empty() && tree.checkpoint.is_some())
+        || (!tree.records.is_empty()
+            && (tree.records.len() != tree.nodes.len()
+                || tree.records[0] != 5
+                || tree
+                    .records
+                    .iter()
+                    .skip(1)
+                    .any(|&r| !(24..1 << 48).contains(&r))))
+        || tree
+            .checkpoint
+            .is_some_and(|checkpoint| checkpoint.next_usn < 0)
+    {
+        return false;
+    }
     if tree
         .nodes
         .first()
         .is_none_or(|n| n.parent.is_some() || n.kind != Kind::Dir)
     {
         return false;
+    }
+    let mut records = std::collections::HashMap::new();
+    for (node, &record) in tree.nodes.iter().zip(&tree.records) {
+        if node.kind == Kind::Other {
+            return false;
+        }
+        if let Some((kind, size)) = records.insert(record, (node.kind, node.size))
+            && (kind != Kind::File || node.kind != kind || node.size != size)
+        {
+            return false;
+        }
     }
     let mut seen = vec![false; tree.nodes.len()];
     seen[0] = true;
@@ -359,12 +419,87 @@ mod benchmarks {
     use std::{hint::black_box, time::Instant};
 
     #[test]
+    fn version_two_loads_without_incremental_metadata_and_resaves_as_three() {
+        let dir = tempfile::tempdir().unwrap();
+        let tree = crate::scanner::scan(
+            dir.path(),
+            None,
+            &std::sync::atomic::AtomicBool::new(false),
+            |_| {},
+        )
+        .unwrap()
+        .unwrap();
+        let root = &tree.nodes[0];
+        let meta = SavedScan {
+            version: 2,
+            path: tree.root_path.to_string_lossy().into_owned(),
+            scanned_at: 123,
+            size: root.size,
+            files: root.files,
+            folders: root.folders,
+            recycled: 0,
+            deleted: 0,
+            errors: 0,
+            drive_free: None,
+            drive_total: None,
+        };
+        let config = bincode::config::standard();
+        let mut payload =
+            bincode::serde::encode_to_vec((tree.nodes.len(), &tree.root_path, tree.errors), config)
+                .unwrap();
+        for node in &tree.nodes {
+            payload.extend(
+                bincode::serde::encode_to_vec(
+                    DiskNode {
+                        name: Cow::Borrowed(&node.name),
+                        parent: node.parent,
+                        children: Cow::Borrowed(&node.children),
+                        kind: node.kind,
+                        size: node.size,
+                        files: node.files,
+                        folders: node.folders,
+                        category: node.category,
+                    },
+                    config,
+                )
+                .unwrap(),
+            );
+        }
+        let mut encoded = MAGIC.to_vec();
+        encoded.extend(2_u32.to_le_bytes());
+        encoded.extend(zstd::stream::encode_all(payload.as_slice(), 3).unwrap());
+        let key = key(&meta.path);
+        fs::write(dir.path().join(format!("{key}.tree")), encoded).unwrap();
+        fs::write(
+            dir.path().join(format!("{key}.json")),
+            serde_json::to_vec(&meta).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(list(dir.path()).unwrap(), vec![meta.clone()]);
+        let (loaded, actual) = load(dir.path(), &meta.path).unwrap();
+        assert_eq!(actual, meta);
+        assert!(loaded.records.is_empty());
+        assert_eq!(loaded.checkpoint, None);
+        assert_eq!(
+            serde_json::to_value(&loaded).unwrap(),
+            serde_json::to_value(&tree).unwrap()
+        );
+        save(dir.path(), &loaded, &meta).unwrap();
+        let (loaded, actual) = load(dir.path(), &meta.path).unwrap();
+        assert_eq!(actual.version, 3);
+        assert!(loaded.records.is_empty());
+        assert_eq!(loaded.checkpoint, None);
+    }
+
+    #[test]
     #[ignore = "manual 1.5M-node saved-scan timings; run in release mode"]
     fn saved_scan_timings() {
         let mut tree = Tree {
             nodes: Vec::with_capacity(1_500_000),
             root_path: r"C:\Synthetic".into(),
             errors: 17,
+            records: vec![],
+            checkpoint: None,
         };
         let mut random = 42_u64;
         for id in 0..1_500_000 {
@@ -441,7 +576,7 @@ mod benchmarks {
             bytes.len()
         );
         let start = Instant::now();
-        let tree = decode(&bytes).unwrap();
+        let tree = decode(&bytes, FORMAT_VERSION).unwrap();
         eprintln!(
             "TIMING decode: {:.3} ms",
             start.elapsed().as_secs_f64() * 1000.0

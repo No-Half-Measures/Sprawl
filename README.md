@@ -48,6 +48,7 @@ the MFT and the directory walk and prints timings and differences.
   atomic flag cancels scans; a worker mutex serializes replacements. Completed
   trees are immutable arena snapshots. Files store their own names, with parent
   indices used to reconstruct paths. Folder counts exclude the folder itself.
+- NTFS drive rescans replay the USN journal when a saved checkpoint is usable, falling back to a full scan when history or records are unavailable.
 - All filesystem errors below the selected root are counted and skipped.
   Symlinks and junctions are excluded; cloud placeholders and dedup reparse
   points remain included. Sizes are logical lengths;

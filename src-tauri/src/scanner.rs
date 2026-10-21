@@ -75,6 +75,14 @@ pub struct Tree {
     pub nodes: Vec<Node>,
     pub root_path: PathBuf,
     pub errors: u64,
+    pub records: Vec<u64>,
+    pub checkpoint: Option<JournalCheckpoint>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct JournalCheckpoint {
+    pub journal_id: u64,
+    pub next_usn: i64,
 }
 
 #[derive(Clone, Serialize, Default, Debug)]
@@ -277,6 +285,7 @@ pub fn strip_verbatim_prefix(path: &Path) -> PathBuf {
 
 pub fn scan(
     path: &Path,
+    previous: Option<&Tree>,
     cancel: &AtomicBool,
     report: impl Fn(Progress) + Sync,
 ) -> Result<Option<Tree>, String> {
@@ -288,6 +297,21 @@ pub fn scan(
     let root_path = strip_verbatim_prefix(&fs::canonicalize(path).map_err(|e| e.to_string())?);
     #[cfg(windows)]
     if drive_letter(&root_path).is_some() {
+        if let Some(previous) = previous
+            && previous
+                .root_path
+                .to_string_lossy()
+                .eq_ignore_ascii_case(&root_path.to_string_lossy())
+            && let Ok(result) = crate::mft::rescan_volume(&root_path, previous, cancel, &report)
+        {
+            if cancel.load(Ordering::Relaxed) {
+                return Ok(None);
+            }
+            return Ok(result.map(|mut tree| {
+                tree.nodes[0].name = root_name(path);
+                tree
+            }));
+        }
         let result = crate::mft::scan_volume(&root_path, cancel, &report);
         if cancel.load(Ordering::Relaxed) {
             return Ok(None);
@@ -301,6 +325,8 @@ pub fn scan(
             Err(_) => {}
         }
     }
+    #[cfg(not(windows))]
+    let _ = previous;
     if cancel.load(Ordering::Relaxed) {
         return Ok(None);
     }
@@ -348,6 +374,8 @@ fn scan_walk(
         }],
         root_path: root_path.clone(),
         errors: 0,
+        records: vec![],
+        checkpoint: None,
     };
     let nodes = Mutex::new(std::mem::take(&mut tree.nodes));
     rayon::scope(|scope| {
@@ -664,6 +692,53 @@ mod tests {
             assert_eq!(drive_letter(Path::new(path)), None, "{path}");
         }
         assert_eq!(root_name(Path::new(r"c:/")), "c:/");
+    }
+
+    #[cfg(windows)]
+    #[test]
+    #[ignore = "Scans a whole drive then replays its journal; run elevated with --nocapture"]
+    fn incremental_matches_full_scan() {
+        let root_path = PathBuf::from(
+            std::env::var_os("DISKMAPPER_MFT_DRIVE").unwrap_or_else(|| r"C:\".into()),
+        );
+        let cancel = AtomicBool::new(false);
+        let start = Instant::now();
+        let full = crate::mft::scan_volume(&root_path, &cancel, &|_| {})
+            .unwrap_or_else(|error| panic!("MFT scan failed; run elevated: {error}"))
+            .expect("Full scan cancelled");
+        let full_time = start.elapsed();
+        assert!(
+            full.checkpoint.is_some(),
+            "An active NTFS journal is required"
+        );
+        let start = Instant::now();
+        let incremental = crate::mft::rescan_volume(&root_path, &full, &cancel, &|_| {})
+            .unwrap_or_else(|error| panic!("Incremental scan unavailable: {error}"))
+            .expect("Incremental scan cancelled");
+        let incremental_time = start.elapsed();
+        for (label, tree, elapsed) in [
+            ("Full", &full, full_time),
+            ("Incremental", &incremental, incremental_time),
+        ] {
+            let root = &tree.nodes[0];
+            eprintln!(
+                "{label}: {elapsed:?}, files={}, folders={}, size={}",
+                root.files, root.folders, root.size
+            );
+        }
+        let before = &full.nodes[0];
+        let after = &incremental.nodes[0];
+        for (expected, actual, tolerance) in [
+            (before.files, after.files, 100),
+            (before.folders, after.folders, 20),
+            (before.size, after.size, 128 * 1024 * 1024),
+        ] {
+            assert!(
+                expected.abs_diff(actual) <= (expected / 100).max(tolerance),
+                "Full={expected}, incremental={actual}"
+            );
+        }
+        assert_eq!(incremental.records.len(), incremental.nodes.len());
     }
 
     #[cfg(windows)]

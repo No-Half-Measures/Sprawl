@@ -12,7 +12,7 @@ fn fixture() -> (tempfile::TempDir, Tree) {
     fs::write(dir.path().join("large.MP4"), [0; 100]).unwrap();
     fs::write(dir.path().join("small.txt"), [0; 10]).unwrap();
     fs::write(dir.path().join("nested/code.rs"), [0; 40]).unwrap();
-    let tree = scanner::scan(dir.path(), &AtomicBool::new(false), |_| {})
+    let tree = scanner::scan(dir.path(), None, &AtomicBool::new(false), |_| {})
         .unwrap()
         .unwrap();
     (dir, tree)
@@ -190,6 +190,88 @@ fn saved_scan_round_trip() {
 }
 
 #[test]
+fn saved_mft_records_remain_aligned_after_remove_and_compaction() {
+    let (_fixture, mut tree) = fixture();
+    tree.records = (0..tree.nodes.len())
+        .map(|id| if id == 0 { 5 } else { 24 + id as u64 })
+        .collect();
+    tree.checkpoint = Some(scanner::JournalCheckpoint {
+        journal_id: 42,
+        next_usn: 1234,
+    });
+    let original_records = tree.records.clone();
+    let dir = tempfile::tempdir().unwrap();
+    cache::save(dir.path(), &tree, &saved(&tree, 1)).unwrap();
+    let (loaded, _) = cache::load(dir.path(), &tree.root_path.to_string_lossy()).unwrap();
+    assert_eq!(loaded.records, tree.records);
+    assert_eq!(loaded.checkpoint, tree.checkpoint);
+    let nested = tree.nodes.iter().position(|n| n.name == "nested").unwrap();
+    tree.remove(nested).unwrap();
+    assert_eq!(tree.records, original_records);
+    assert_eq!(tree.records.len(), tree.nodes.len());
+    cache::save(dir.path(), &tree, &saved(&tree, 1)).unwrap();
+    let (loaded, _) = cache::load(dir.path(), &tree.root_path.to_string_lossy()).unwrap();
+    assert_eq!(loaded.records.len(), loaded.nodes.len());
+    assert_eq!(loaded.nodes.len(), tree.nodes.len() - 2);
+    assert_eq!(loaded.checkpoint, tree.checkpoint);
+    for (id, node) in loaded.nodes.iter().enumerate() {
+        let original = tree.nodes.iter().position(|n| n.name == node.name).unwrap();
+        assert_eq!(loaded.records[id], original_records[original]);
+    }
+}
+
+#[test]
+fn invalid_mft_cache_metadata_is_rejected() {
+    let (_fixture, mut tree) = fixture();
+    let dir = tempfile::tempdir().unwrap();
+    for fault in [
+        "missing records",
+        "root record",
+        "record range",
+        "negative checkpoint",
+        "duplicate directory",
+        "mixed record kinds",
+        "different link sizes",
+    ] {
+        tree.records = (0..tree.nodes.len())
+            .map(|id| if id == 0 { 5 } else { 24 + id as u64 })
+            .collect();
+        tree.checkpoint = Some(scanner::JournalCheckpoint {
+            journal_id: 42,
+            next_usn: 1234,
+        });
+        match fault {
+            "missing records" => tree.records.clear(),
+            "root record" => tree.records[0] = 6,
+            "record range" => tree.records[1] = 1 << 48,
+            "negative checkpoint" => tree.checkpoint.as_mut().unwrap().next_usn = -1,
+            _ => {
+                let name = if fault == "different link sizes" {
+                    "large.MP4"
+                } else {
+                    "nested"
+                };
+                let duplicate = if fault == "duplicate directory" {
+                    "empty"
+                } else {
+                    "small.txt"
+                };
+                let source = tree.nodes.iter().position(|n| n.name == name).unwrap();
+                let target = tree.nodes.iter().position(|n| n.name == duplicate).unwrap();
+                tree.records[target] = tree.records[source];
+            }
+        }
+        cache::save(dir.path(), &tree, &saved(&tree, 1)).unwrap();
+        assert!(
+            cache::load(dir.path(), &tree.root_path.to_string_lossy()).is_err(),
+            "{fault}"
+        );
+    }
+    tree.records = vec![5];
+    assert!(cache::save(dir.path(), &tree, &saved(&tree, 1)).is_err());
+}
+
+#[test]
 fn remove_updates_ancestors_order_counts_and_rejects_detached_descendants() {
     let mut tree = comparison_tree(&[
         ("a", 0, Kind::Dir, 0),
@@ -355,7 +437,7 @@ fn stale_background_save_cannot_restore_a_zero_byte_item() {
     for name in ["empty", "zero.txt"] {
         let (fixture, _) = fixture();
         fs::write(fixture.path().join("zero.txt"), []).unwrap();
-        let mut tree = scanner::scan(fixture.path(), &AtomicBool::new(false), |_| {})
+        let mut tree = scanner::scan(fixture.path(), None, &AtomicBool::new(false), |_| {})
             .unwrap()
             .unwrap();
         let original = tree.clone();
@@ -580,6 +662,8 @@ fn comparison_tree(entries: &[(&str, usize, Kind, u64)]) -> Tree {
         }],
         root_path: "C:\\root".into(),
         errors: 0,
+        records: vec![],
+        checkpoint: None,
     };
     for &(name, parent, kind, size) in entries {
         let id = tree.nodes.len();
@@ -986,7 +1070,7 @@ fn dominant_folder_category_uses_all_descendant_bytes() {
     fs::write(dir.path().join("mixed/build.rlib"), [0; 60]).unwrap();
     fs::write(dir.path().join("mixed/game.pbo"), [0; 40]).unwrap();
     fs::write(dir.path().join("more-game.uasset"), [0; 50]).unwrap();
-    let tree = scanner::scan(dir.path(), &AtomicBool::new(false), |_| {})
+    let tree = scanner::scan(dir.path(), None, &AtomicBool::new(false), |_| {})
         .unwrap()
         .unwrap();
     let mixed = tree.nodes[0]
@@ -1066,11 +1150,19 @@ fn shared_category_mapping_includes_build_game_and_disk_assets() {
 fn cancelled_and_invalid_scan() {
     let dir = tempfile::tempdir().unwrap();
     assert!(
-        scanner::scan(dir.path(), &AtomicBool::new(true), |_| {})
+        scanner::scan(dir.path(), None, &AtomicBool::new(true), |_| {})
             .unwrap()
             .is_none()
     );
-    assert!(scanner::scan(&dir.path().join("missing"), &AtomicBool::new(false), |_| {}).is_err());
+    assert!(
+        scanner::scan(
+            &dir.path().join("missing"),
+            None,
+            &AtomicBool::new(false),
+            |_| {}
+        )
+        .is_err()
+    );
 }
 
 #[test]
@@ -1105,7 +1197,7 @@ fn traversal_is_independent_of_worker_count() {
             .unwrap();
         let progress = std::sync::Mutex::new(scanner::Progress::default());
         let tree = pool.install(|| {
-            scanner::scan(dir.path(), &AtomicBool::new(false), |p| {
+            scanner::scan(dir.path(), None, &AtomicBool::new(false), |p| {
                 *progress.lock().unwrap() = p;
             })
             .unwrap()
@@ -1170,7 +1262,7 @@ fn deep_directory_chain_on_one_worker() {
         .build()
         .unwrap()
         .install(|| {
-            scanner::scan(dir.path(), &AtomicBool::new(false), |_| {})
+            scanner::scan(dir.path(), None, &AtomicBool::new(false), |_| {})
                 .unwrap()
                 .unwrap()
         });
@@ -1218,7 +1310,7 @@ fn event_payloads_match_the_ipc_contract() {
 fn empty_folder_and_progress_totals() {
     let dir = tempfile::tempdir().unwrap();
     let progress = std::sync::Mutex::new(Vec::new());
-    let tree = scanner::scan(dir.path(), &AtomicBool::new(false), |p| {
+    let tree = scanner::scan(dir.path(), None, &AtomicBool::new(false), |p| {
         progress.lock().unwrap().push(p)
     })
     .unwrap()
@@ -1304,12 +1396,12 @@ fn links_are_not_followed() {
         eprintln!("Skipping link test: this account cannot create links or junctions");
         return;
     }
-    let tree = scanner::scan(dir.path(), &AtomicBool::new(false), |_| {})
+    let tree = scanner::scan(dir.path(), None, &AtomicBool::new(false), |_| {})
         .unwrap()
         .unwrap();
     assert_eq!((tree.nodes[0].size, tree.nodes[0].folders), (150, 2));
     assert!(tree.nodes.iter().all(|n| n.name != "loop"));
-    assert!(scanner::scan(&link, &AtomicBool::new(false), |_| {}).is_err());
+    assert!(scanner::scan(&link, None, &AtomicBool::new(false), |_| {}).is_err());
     assert_eq!(
         crate::recycle::check(&link, Kind::Dir).unwrap_err(),
         "This item has changed. Rescan to refresh it."
@@ -1335,7 +1427,7 @@ fn smoke_real_directory() {
     let path =
         std::env::var("DISKMAPPER_SMOKE_PATH").unwrap_or_else(|_| r"C:\Windows\System32".into());
     let start = Instant::now();
-    let tree = scanner::scan(Path::new(&path), &AtomicBool::new(false), |_| {})
+    let tree = scanner::scan(Path::new(&path), None, &AtomicBool::new(false), |_| {})
         .unwrap()
         .unwrap();
     let root = &tree.nodes[0];
