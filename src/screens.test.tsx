@@ -53,6 +53,22 @@ describe('screen details', () => {
     const added = renderToStaticMarkup(<ResultsScreen {...props} changes={{ ...changes, previousSize: null }} />);
     expect(added).toContain('New since');
   });
+  it('uses saved drive capacity for the not-found row and explains unreadable items and elevation', () => {
+    const drive = { mount: 'C:\\', label: 'Disk', total: 100 * gb, free: 80 * gb };
+    const snapshot: SavedScan = { version: 2, path: drive.mount, scannedAt: 123, size: props.current.size, files: 2, folders: 1, errors: 3, driveTotal: drive.total, driveFree: 70 * gb };
+    const html = renderToStaticMarkup(<ResultsScreen {...props} drive={drive} snapshot={snapshot} skipped={3} elevated={false} />);
+    expect(html).toContain('Not found <strong>10 GB</strong>');
+    expect(html).toContain('Not found by scan');
+    expect(html).toContain('Includes 3 items that couldn&#x27;t be read, plus system files and file-system overhead. Run as administrator to include more.');
+    expect(html).toContain('width:33.33333333333333%');
+    expect(html).toContain('Used <strong>30 GB</strong>');
+    const noGap = renderToStaticMarkup(<ResultsScreen {...props} drive={drive} elevated />);
+    expect(noGap).not.toContain('Not found');
+    const noSkipped = renderToStaticMarkup(<ResultsScreen {...props} drive={drive} snapshot={snapshot} elevated />);
+    expect(noSkipped).toContain('System files, restore points, and file-system overhead the scan can&#x27;t see.');
+    expect(noSkipped).not.toContain('Run as administrator to include more.');
+    expect(renderToStaticMarkup(<ResultsScreen {...props} snapshot={snapshot} />)).not.toContain('Not found');
+  });
   it('renders named comparisons, positive categories, tiny percentages, and full path titles', () => {
     vi.stubGlobal('window', { devicePixelRatio: 1 });
     const nestedName = 'long-nested-folder-name-'.repeat(8);

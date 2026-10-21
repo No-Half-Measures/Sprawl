@@ -77,3 +77,9 @@ totals and Contents show size changes, new items, and removed direct children.
 Switch **Largest files** to **Grown since** for the 50 files with the most growth.
 `get_changes(nodeId)` computes the comparison lazily and caches it for the current
 tree, independently of the map and other panels.
+
+At a drive root, **Not found by scan** explains used space beyond the scanned
+files when the gap reaches the larger of 1 GiB and 1% of capacity. Saved scans use
+their recorded drive capacity. Unreadable items, system files, restore points and
+file-system overhead can contribute; administrator access can include more.
+Negative gaps from hard links or logical compressed-file sizes are not shown.

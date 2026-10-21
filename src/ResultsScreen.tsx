@@ -8,6 +8,7 @@ import {
   formatScanDate,
   formatSize,
   percent,
+  notFoundByScan,
   staleness,
   type Breakdown,
   type Changes,
@@ -38,6 +39,8 @@ interface Props {
   parentSize: number | undefined;
   parentName: string | undefined;
   drive?: Drive;
+  snapshot?: SavedScan | null;
+  elevated?: boolean;
   changes?: Changes | null;
   scanPath: string;
   skipped: number;
@@ -66,6 +69,8 @@ export default function ResultsScreen({
   parentSize,
   parentName,
   drive,
+  snapshot,
+  elevated,
   changes,
   scanPath,
   skipped,
@@ -103,6 +108,14 @@ export default function ResultsScreen({
     }
   };
   const visibleBreakdown = breakdown.filter(b => b.bytes > 0);
+  const total = snapshot?.driveTotal ?? drive?.total ?? 0;
+  const free = snapshot?.driveFree ?? drive?.free ?? 0;
+  const used = Math.max(0, total - free);
+  const notFound = drive ? notFoundByScan(total, free, current.size) : null;
+  const notFoundText = (skipped > 0
+    ? `Includes ${skipped.toLocaleString()} items that couldn't be read, plus system files and file-system overhead.`
+    : "System files, restore points, and file-system overhead the scan can't see.")
+    + (elevated === false ? ' Run as administrator to include more.' : '');
   const previousSizes = new Map(changes?.children.map(n => [n.id, n.previousSize]));
   const since = changes ? formatScanDate(changes.since) : '';
   const showGrown = fileTab === 'grown' && !!changes;
@@ -161,9 +174,10 @@ export default function ResultsScreen({
             {drive ? (
               <span className="drive-capacity">
                 <span>{drive.mount}</span>
-                <span>Used <strong>{formatSize(Math.max(0, drive.total - drive.free))}</strong></span>
-                <span>Free <strong>{formatSize(drive.free)}</strong></span>
-                <span>Total <strong>{formatSize(drive.total)}</strong></span>
+                <span>Used <strong>{formatSize(used)}</strong></span>
+                <span>Free <strong>{formatSize(free)}</strong></span>
+                <span>Total <strong>{formatSize(total)}</strong></span>
+                {notFound !== null && <span title={notFoundText}>Not found <strong>{formatSize(notFound)}</strong></span>}
               </span>
             ) : parentSize !== undefined && (
               <span>{percent(current.size, parentSize)} of {parentName}</span>
@@ -298,6 +312,14 @@ export default function ResultsScreen({
                 <div className="content-row summary-row">
                   <span>{changes.removed.items.toLocaleString()} removed items</span>
                   <strong className="delta shrink">−{formatSize(changes.removed.bytes)}</strong>
+                </div>
+              )}
+              {!loading && notFound !== null && (
+                <div className="content-row not-found-row">
+                  <span>Not found by scan</span>
+                  <small title={notFoundText}>{notFoundText}</small>
+                  <span className="row-data"><span /><strong>{formatSize(notFound)}</strong><span className="row-percent">{percent(notFound, used)}</span></span>
+                  <span className="row-meter"><i style={{ width: `${used ? notFound / used * 100 : 0}%` }} /></span>
                 </div>
               )}
             </div>

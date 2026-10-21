@@ -49,6 +49,10 @@ export function formatSize(bytes: number): string {
 export function formatDelta(bytes: number): string {
   return `${bytes > 0 ? '+' : bytes < 0 ? '−' : ''}${formatSize(Math.abs(bytes))}`;
 }
+export function notFoundByScan(total: number, free: number, scanned: number): number | null {
+  const gap = total - free - scanned;
+  return gap >= Math.max(1024 ** 3, total * .01) ? gap : null;
+}
 export function categoryFor(name: string): string {
   const dot = name.lastIndexOf('.');
   const extension = dot > 0 ? name.slice(dot + 1).toLowerCase() : '';

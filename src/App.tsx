@@ -475,6 +475,8 @@ export default function App() {
           drive={trail.length === 1 && drive && isDriveRoot(scanPath, drive.mount) ? drive : undefined}
           scanPath={scanPath}
           skipped={skipped}
+          snapshot={snapshot}
+          elevated={admin?.elevated}
           changes={changes}
           error={error}
           loading={loading}

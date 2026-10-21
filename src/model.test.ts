@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { categories, categoryFor, formatAge, formatDelta, formatScanDate, formatSize, isDriveRoot, percent, staleness, type SavedScan, type TreeNode } from './model';
+import { categories, categoryFor, formatAge, formatDelta, formatScanDate, formatSize, isDriveRoot, notFoundByScan, percent, staleness, type SavedScan, type TreeNode } from './model';
 import { fitLabel, layoutTree, textColor, wrapLabel } from './layout';
 
 afterEach(() => vi.useRealTimers());
@@ -69,6 +69,21 @@ describe('binary size formatting', () => {
     expect(formatSize(1023)).toBe('1,023 B'); expect(formatSize(1024)).toBe('1 KB');
     expect(formatSize(1536)).toBe('1.5 KB'); expect(formatSize(1024 ** 4)).toBe('1 TB');
     expect(formatSize(Infinity)).toBe('0 B');
+  });
+});
+
+describe('space not found by a drive scan', () => {
+  const gb = 1024 ** 3;
+  it('uses the larger of 1 GiB and 1% of total, including the boundary', () => {
+    expect(notFoundByScan(50 * gb, 10 * gb, 39 * gb + 1)).toBeNull();
+    expect(notFoundByScan(50 * gb, 10 * gb, 39 * gb)).toBe(gb);
+    expect(notFoundByScan(1000 * gb, 100 * gb, 890 * gb + 1)).toBeNull();
+    expect(notFoundByScan(1000 * gb, 100 * gb, 890 * gb)).toBe(10 * gb);
+  });
+  it('hides zero and negative gaps from hard links or logical compressed sizes', () => {
+    expect(notFoundByScan(100 * gb, 20 * gb, 80 * gb)).toBeNull();
+    expect(notFoundByScan(100 * gb, 20 * gb, 90 * gb)).toBeNull();
+    expect(notFoundByScan(0, 0, 0)).toBeNull();
   });
 });
 
