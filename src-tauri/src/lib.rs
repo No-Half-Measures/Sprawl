@@ -108,6 +108,7 @@ fn scan_metadata(tree: &Tree) -> SavedScan {
         files: root.files,
         folders: root.folders,
         recycled: 0,
+        deleted: 0,
         errors: tree.errors,
         drive_free: drive.map(|d| d.free),
         drive_total: drive.map(|d| d.total),
@@ -493,13 +494,18 @@ fn get_nodes(
 }
 
 #[derive(Serialize)]
-struct Recycled {
+struct Deleted {
     root: scanner::ViewNode,
     recycled: u64,
+    deleted: u64,
 }
 
 #[tauri::command]
-async fn move_to_recycle_bin(node_id: usize, app: tauri::AppHandle) -> Result<Recycled, String> {
+async fn delete_item(
+    node_id: usize,
+    permanent: bool,
+    app: tauri::AppHandle,
+) -> Result<Deleted, String> {
     #[cfg(windows)]
     let owner = app
         .get_webview_window("main")
@@ -537,7 +543,7 @@ async fn move_to_recycle_bin(node_id: usize, app: tauri::AppHandle) -> Result<Re
             (tree, session.generation, path, meta)
         };
         let size = tree.nodes[node_id].size;
-        recycle::move_item(&path, &tree.nodes[node_id].name, owner)?;
+        recycle::delete_item(&path, &tree.nodes[node_id].name, owner, permanent)?;
         let mut updated = (*tree).clone();
         updated.remove(node_id)?;
         let updated = Arc::new(updated);
@@ -545,10 +551,15 @@ async fn move_to_recycle_bin(node_id: usize, app: tauri::AppHandle) -> Result<Re
         meta.size = root.size;
         meta.files = root.files;
         meta.folders = root.folders;
-        meta.recycled += size;
-        let result = Recycled {
+        if permanent {
+            meta.deleted += size;
+        } else {
+            meta.recycled += size;
+        }
+        let result = Deleted {
             root,
             recycled: meta.recycled,
+            deleted: meta.deleted,
         };
         let panels = {
             let mut session = state
@@ -758,7 +769,7 @@ pub fn run() {
             cancel_scan,
             get_tree,
             get_nodes,
-            move_to_recycle_bin,
+            delete_item,
             get_largest_files,
             get_type_breakdown,
             get_changes,

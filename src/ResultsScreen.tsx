@@ -42,6 +42,7 @@ interface Props {
   drive?: Drive;
   snapshot?: SavedScan | null;
   recycled?: number;
+  deleted?: number;
   elevated?: boolean;
   changes?: Changes | null;
   scanPath: string;
@@ -73,6 +74,7 @@ export default function ResultsScreen({
   drive,
   snapshot,
   recycled = snapshot?.recycled ?? 0,
+  deleted = snapshot?.deleted ?? 0,
   elevated,
   changes,
   scanPath,
@@ -114,7 +116,7 @@ export default function ResultsScreen({
   const total = snapshot?.driveTotal ?? drive?.total ?? 0;
   const free = snapshot?.driveFree ?? drive?.free ?? 0;
   const used = Math.max(0, total - free);
-  const notFound = drive ? notFoundByScan(total, free, current.size + recycled) : null;
+  const notFound = drive ? notFoundByScan(total, free, current.size + recycled + deleted) : null;
   const notFoundText = (skipped > 0
     ? `Includes ${count(skipped, 'item')} that couldn't be read, plus system files and file-system overhead.`
     : "System files, restore points, and file-system overhead the scan can't see.")
@@ -263,7 +265,7 @@ export default function ResultsScreen({
                   onKeyDown={e => {
                     if (e.key === 'Delete' && n.id !== null && n.id !== 0) {
                       e.preventDefault();
-                      void action('recycle', n);
+                      void action('delete', n);
                     }
                     if (e.key === 'ContextMenu' || (e.shiftKey && e.key === 'F10')) {
                       e.preventDefault();
@@ -398,7 +400,7 @@ export default function ResultsScreen({
                   onKeyDown={e => {
                     if (e.key === 'Delete') {
                       e.preventDefault();
-                      void action('recycle', { ...f, kind: 'file', files: 1, folders: 0 });
+                      void action('delete', { ...f, kind: 'file', files: 1, folders: 0 });
                     }
                     if (e.key === 'ContextMenu' || (e.shiftKey && e.key === 'F10')) {
                       e.preventDefault();

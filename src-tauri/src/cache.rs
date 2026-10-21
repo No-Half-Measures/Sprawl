@@ -35,6 +35,8 @@ pub struct SavedScan {
     pub folders: u64,
     #[serde(default)]
     pub recycled: u64,
+    #[serde(default)]
+    pub deleted: u64,
     pub errors: u64,
     pub drive_free: Option<u64>,
     pub drive_total: Option<u64>,
@@ -117,6 +119,7 @@ pub fn save(dir: &Path, tree: &Tree, meta: &SavedScan) -> io::Result<()> {
             && (s.scanned_at > meta.scanned_at
                 || (s.scanned_at == meta.scanned_at
                     && (s.recycled > meta.recycled
+                        || s.deleted > meta.deleted
                         || s.files < meta.files
                         || s.folders < meta.folders)))
     }) {
@@ -414,6 +417,7 @@ mod benchmarks {
             files: root.files,
             folders: root.folders,
             recycled: 0,
+            deleted: 0,
             errors: tree.errors,
             drive_free: None,
             drive_total: None,

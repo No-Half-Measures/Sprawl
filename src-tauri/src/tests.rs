@@ -28,6 +28,7 @@ fn saved(tree: &Tree, scanned_at: u64) -> SavedScan {
         files: root.files,
         folders: root.folders,
         recycled: 0,
+        deleted: 0,
         errors: tree.errors,
         drive_free: Some(100),
         drive_total: Some(1000),
@@ -145,7 +146,11 @@ fn saved_scan_round_trip() {
     tree.errors = 3;
     tree.nodes[0].category = None;
     let dir = tempfile::tempdir().unwrap();
-    let meta = saved(&tree, 123);
+    let meta = SavedScan {
+        recycled: 12,
+        deleted: 34,
+        ..saved(&tree, 123)
+    };
     cache::save(dir.path(), &tree, &meta).unwrap();
     let (loaded, loaded_meta) = cache::load(dir.path(), &meta.path).unwrap();
     assert_eq!(loaded_meta, meta);
@@ -180,6 +185,8 @@ fn saved_scan_round_trip() {
     .unwrap();
     assert_eq!(json["scannedAt"], 123);
     assert_eq!(json["driveFree"], 100);
+    assert_eq!(json["recycled"], 12);
+    assert_eq!(json["deleted"], 34);
 }
 
 #[test]
@@ -311,14 +318,36 @@ fn resave_removed_subtree_compacts_without_rotating_or_losing_recycled() {
 }
 
 #[test]
-fn saved_scan_without_recycled_is_backwards_compatible() {
+fn saved_scan_without_deletion_totals_is_backwards_compatible() {
     let (_fixture, tree) = fixture();
     let mut json = serde_json::to_value(saved(&tree, 1)).unwrap();
     json.as_object_mut().unwrap().remove("recycled");
-    assert_eq!(
-        serde_json::from_value::<SavedScan>(json).unwrap().recycled,
-        0
-    );
+    json.as_object_mut().unwrap().remove("deleted");
+    let meta = serde_json::from_value::<SavedScan>(json).unwrap();
+    assert_eq!((meta.recycled, meta.deleted), (0, 0));
+    let mut json = serde_json::to_value(meta).unwrap();
+    json["recycled"] = 40.into();
+    json.as_object_mut().unwrap().remove("deleted");
+    let meta = serde_json::from_value::<SavedScan>(json).unwrap();
+    assert_eq!((meta.recycled, meta.deleted), (40, 0));
+}
+
+#[test]
+fn stale_background_save_cannot_reduce_either_deletion_total() {
+    let (_fixture, tree) = fixture();
+    let original = saved(&tree, 123);
+    for permanent in [false, true] {
+        let dir = tempfile::tempdir().unwrap();
+        let mut meta = original.clone();
+        if permanent {
+            meta.deleted = 40;
+        } else {
+            meta.recycled = 40;
+        }
+        cache::save(dir.path(), &tree, &meta).unwrap();
+        cache::save(dir.path(), &tree, &original).unwrap();
+        assert_eq!(cache::load(dir.path(), &meta.path).unwrap().1, meta);
+    }
 }
 
 #[test]
@@ -337,6 +366,7 @@ fn stale_background_save_cannot_restore_a_zero_byte_item() {
         tree.remove(id).unwrap();
         let meta = saved(&tree, 123);
         assert_eq!(meta.recycled, old.recycled);
+        assert_eq!(meta.deleted, old.deleted);
         cache::save(dir.path(), &tree, &meta).unwrap();
         cache::save(dir.path(), &original, &old).unwrap();
         let (loaded, actual) = cache::load(dir.path(), &meta.path).unwrap();

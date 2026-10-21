@@ -3,7 +3,7 @@ import { Children, isValidElement, type ComponentProps, type ReactElement, type 
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import HomeScreen from './HomeScreen';
 import ResultsScreen, { SnapshotBanner } from './ResultsScreen';
-import RecycleDialog from './RecycleDialog';
+import DeleteDialog from './DeleteDialog';
 import ScanScreen from './ScanScreen';
 import { categories, formatSize, percent, type SavedScan, type TreeNode } from './model';
 
@@ -13,26 +13,46 @@ const longPath = `${'deeply-nested-folder\\'.repeat(30)}${longName}`;
 const noop = () => {};
 afterEach(() => vi.unstubAllGlobals());
 
-describe('recycle confirmation', () => {
+describe('delete confirmation', () => {
   it('renders the item, full path, size and folder counts, with initial focus on Cancel', () => {
-    const html = renderToStaticMarkup(<RecycleDialog node={current} path="E:\Projects\Other" moving={false} cancel={noop} confirm={noop} />);
+    const html = renderToStaticMarkup(<DeleteDialog node={current} path="E:\Projects\Other" running={false} cancel={noop} confirm={noop} />);
     expect(html).toContain('role="alertdialog"');
     expect(html).toContain('aria-modal="true"');
-    expect(html).toContain('Move to Recycle Bin?');
+    expect(html).toContain('Delete Other?');
+    expect(html.match(/<button/g)).toHaveLength(3);
     expect(html).toContain('Other');
     expect(html).toContain('E:\\Projects\\Other');
     expect(html).toContain('9.8 KB · 2 files · 1 folder');
-    expect(html).toContain('You can restore it from the Recycle Bin. The space is freed when you empty the Recycle Bin.');
+    expect(html).toContain('Moving to the Recycle Bin lets you restore it later. Deleting permanently frees the space now and can&#x27;t be undone.');
     expect(html).toMatch(/<button autofocus="">Cancel<\/button>/);
     expect(html.match(/autofocus/g)).toHaveLength(1);
-    expect(html).toContain('class="danger">Move to Recycle Bin');
+    expect(html).toContain('class="primary">Move to Recycle Bin');
+    expect(html).toContain('class="danger-outline">Delete permanently');
   });
-  it('disables both buttons while moving and omits folder counts for files', () => {
-    const html = renderToStaticMarkup(<RecycleDialog node={{ ...current, kind: 'file' }} path="C:\file.txt" moving cancel={noop} confirm={noop} />);
-    expect(html.match(/disabled=""/g)).toHaveLength(2);
+  it('disables all three buttons while moving and omits folder counts for files', () => {
+    const html = renderToStaticMarkup(<DeleteDialog node={{ ...current, kind: 'file' }} path="C:\file.txt" running cancel={noop} confirm={noop} />);
+    expect(html.match(/disabled=""/g)).toHaveLength(3);
     expect(html).toContain('Moving…');
     expect(html).not.toContain('2 files');
     expect(html).not.toContain('1 folder');
+  });
+  it('renders the permanent warning and initially focuses Back', () => {
+    const html = renderToStaticMarkup(<DeleteDialog node={current} path="E:\Projects\Other" running={false} cancel={noop} confirm={noop} initialStep="permanent" />);
+    expect(html).toContain('role="alertdialog"');
+    expect(html).toContain('aria-modal="true"');
+    expect(html).toContain('Delete permanently?');
+    expect(html).toContain('Other (9.8 KB) will be deleted permanently. This can&#x27;t be undone.');
+    expect(html.match(/<button/g)).toHaveLength(2);
+    expect(html).toMatch(/<button autofocus="">Back<\/button>/);
+    expect(html.match(/autofocus/g)).toHaveLength(1);
+    expect(html).toContain('class="danger">Delete permanently');
+    expect(html).not.toContain('Move to Recycle Bin');
+  });
+  it('disables both buttons while permanently deleting', () => {
+    const html = renderToStaticMarkup(<DeleteDialog node={current} path="E:\Projects\Other" running cancel={noop} confirm={noop} initialStep="permanent" />);
+    expect(html.match(/disabled=""/g)).toHaveLength(2);
+    expect(html).toContain('Deleting…');
+    expect(html).not.toContain('Moving…');
   });
 });
 
@@ -77,6 +97,20 @@ describe('screen details', () => {
     expect(html).toContain('· 20 GB in Recycle Bin');
     expect(html).not.toContain('Not found by scan');
     expect(renderToStaticMarkup(<ResultsScreen {...props} recycled={20 * gb} />)).not.toContain('in Recycle Bin');
+  });
+  it('accounts for both delete modes and labels only recycled bytes', () => {
+    const drive = { mount: 'C:\\', label: 'Disk', total: 100 * gb, free: 60 * gb };
+    const html = renderToStaticMarkup(<ResultsScreen {...props} drive={drive} recycled={5 * gb} deleted={10 * gb} />);
+    expect(html).toContain('Not found <strong>5 GB</strong>');
+    expect(html).toContain('· 5 GB in Recycle Bin');
+    expect(html).not.toContain('15 GB in Recycle Bin');
+    const snapshot: SavedScan = { version: 2, path: drive.mount, scannedAt: 123, size: props.current.size, files: 2, folders: 1, recycled: 5 * gb, deleted: 15 * gb, errors: 0, driveTotal: drive.total, driveFree: drive.free };
+    const saved = renderToStaticMarkup(<ResultsScreen {...props} drive={drive} snapshot={snapshot} />);
+    expect(saved).not.toContain('Not found');
+    expect(saved).toContain('· 5 GB in Recycle Bin');
+    const permanentOnly = renderToStaticMarkup(<ResultsScreen {...props} drive={drive} deleted={20 * gb} />);
+    expect(permanentOnly).not.toContain('Not found');
+    expect(permanentOnly).not.toContain('in Recycle Bin');
   });
   it('renders growth, shrink and new badges, skips aggregates and tiny deltas, and shows removals', () => {
     vi.stubGlobal('window', { devicePixelRatio: 1 });

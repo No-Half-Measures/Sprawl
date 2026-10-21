@@ -5,7 +5,7 @@ import { open } from '@tauri-apps/plugin-dialog';
 import HomeScreen from './HomeScreen';
 import ScanScreen from './ScanScreen';
 import ResultsScreen, { SnapshotBanner } from './ResultsScreen';
-import RecycleDialog from './RecycleDialog';
+import DeleteDialog from './DeleteDialog';
 import {
   emptyProgress,
   isDriveRoot,
@@ -66,8 +66,9 @@ export default function App() {
   const [filter, setFilter] = useState<string | null>(null);
   const [menu, setMenu] = useState<Menu | null>(null);
   const [deleting, setDeleting] = useState<{ node: TreeNode; path: string } | null>(null);
-  const [moving, setMoving] = useState(false);
+  const [running, setRunning] = useState(false);
   const [recycled, setRecycled] = useState(0);
+  const [deleted, setDeleted] = useState(0);
   const [refresh, setRefresh] = useState(0);
   const deleteFocus = useRef<HTMLElement | null>(null);
   const deletePending = useRef(false);
@@ -225,6 +226,7 @@ export default function App() {
     scanId.current = null;
     setSnapshot(null);
     setRecycled(0);
+    setDeleted(0);
     setChanges(null);
     setError('');
     setNotice('');
@@ -261,6 +263,7 @@ export default function App() {
       setScanPath(loaded.saved.path);
       setSnapshot(loaded.saved);
       setRecycled(loaded.saved.recycled ?? 0);
+      setDeleted(loaded.saved.deleted ?? 0);
       setSkipped(loaded.errors);
       setTrail([loaded.root]);
       setHistory([]);
@@ -381,7 +384,7 @@ export default function App() {
   async function action(command: string, node: TreeNode) {
     setMenu(null);
     if (node.id === null) return;
-    if (command === 'recycle') {
+    if (command === 'delete') {
       if (node.id === 0 || deleting || deletePending.current) return;
       deletePending.current = true;
       deleteFocus.current = document.activeElement instanceof HTMLElement ? document.activeElement : null;
@@ -410,18 +413,19 @@ export default function App() {
     setDeleting(null);
     deleteFocus.current?.focus();
   }
-  async function recycle() {
-    if (!deleting || moving) return;
+  async function deleteItem(permanent: boolean) {
+    if (!deleting || running) return;
     const { node } = deleting;
     const currentSession = session.current;
-    setMoving(true);
+    setRunning(true);
     setError('');
     try {
-      const result = await invoke<{ root: TreeNode; recycled: number }>('move_to_recycle_bin', { nodeId: node.id });
+      const result = await invoke<{ root: TreeNode; recycled: number; deleted: number }>('delete_item', { nodeId: node.id, permanent });
       if (session.current !== currentSession) return;
-      setNotice(`Moved ${node.name} to the Recycle Bin.`);
+      setNotice(permanent ? `Deleted ${node.name} permanently.` : `Moved ${node.name} to the Recycle Bin.`);
       setRecycled(result.recycled);
-      setSnapshot(meta => meta && { ...meta, size: result.root.size, files: result.root.files, folders: result.root.folders, recycled: result.recycled });
+      setDeleted(result.deleted);
+      setSnapshot(meta => meta && { ...meta, size: result.root.size, files: result.root.files, folders: result.root.folders, recycled: result.recycled, deleted: result.deleted });
       setHover(null);
       setFilter(null);
       setMenu(null);
@@ -438,7 +442,7 @@ export default function App() {
       if (String(e) === 'Delete cancelled.') setNotice('Delete cancelled.');
       else setError(String(e));
     } finally {
-      setMoving(false);
+      setRunning(false);
       closeDelete();
     }
   }
@@ -542,6 +546,7 @@ export default function App() {
           skipped={skipped}
           snapshot={snapshot}
           recycled={recycled}
+          deleted={deleted}
           elevated={admin?.elevated}
           changes={changes}
           error={error}
@@ -593,11 +598,11 @@ export default function App() {
             Copy path
           </button>
           {menu.node.id !== null && menu.node.id !== 0 && (
-            <button role="menuitem" onClick={() => void action('recycle', menu.node)}>Move to Recycle Bin…</button>
+            <button role="menuitem" onClick={() => void action('delete', menu.node)}>Delete…</button>
           )}
         </div>
       )}
-      {deleting && <RecycleDialog {...deleting} moving={moving} cancel={closeDelete} confirm={() => void recycle()} />}
+      {deleting && <DeleteDialog {...deleting} running={running} cancel={closeDelete} confirm={permanent => void deleteItem(permanent)} />}
     </main>
   );
 }

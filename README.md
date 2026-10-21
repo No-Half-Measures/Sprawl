@@ -2,9 +2,10 @@
 
 A Windows disk-space visualizer built with Tauri 2, Rust and React.
 Choose a drive or folder, then explore its largest contents in a canvas treemap.
-Move unwanted items to the Recycle Bin after confirming in the app. Everything
-else is read-only. If Windows cannot recycle an item, it asks before permanently
-deleting it. Drive roots, essential Windows folders and the scan root are protected.
+Delete unwanted items after confirming in the app: choose the Recycle Bin or
+confirm a second time to delete permanently. If Windows cannot recycle an item,
+it asks before permanently deleting it. Drive roots, essential Windows folders
+and the scan root are protected. Everything else is read-only.
 See [DESIGN.md](DESIGN.md) for the product specification.
 
 ## Run
@@ -59,19 +60,26 @@ the MFT and the directory walk and prints timings and differences.
   `start_scan` returns the scan ID. IDs prevent late events changing a newer scan.
 - In addition to the commands in the spec, `get_node_path` supports Copy path and
   `open_folder` opens a scanned directory. Files can only be revealed, never run.
+- `delete_item(nodeId, permanent)` returns `{ root, recycled, deleted }`, with
+  separate byte totals for each mode in the current snapshot.
 - [src/categories.json](src/categories.json) owns category IDs, labels, colors,
   and extensions. Rust embeds the same file that React imports.
 - Backspace / Alt+Left goes back, Alt+Up opens the parent, and Escape clears
   highlights and menus. Tab navigates controls; Enter opens a folder row;
   Shift+F10 opens its context menu. Copy path uses the WebView clipboard API.
-  Delete on a Contents, Largest files or Grown since row opens the same Recycle
-  Bin confirmation as the context menu. Cancel receives initial focus; Escape cancels.
+  Delete on a Contents, Largest files or Grown since row opens the same dialog as
+  **Delete…** in the context menu. It shows the item's name, path, size and folder
+  counts, with Cancel initially focused. Choose **Move to Recycle Bin** or
+  **Delete permanently**; permanent deletion needs a second confirmation, with
+  Back initially focused. Tab stays inside either step; Escape cancels unless running.
 
-Recycling updates the map, panels and navigation without rescanning. Detached node
+Deleting updates the map, panels and navigation without rescanning. Detached node
 IDs stay stable in memory; saved trees omit deleted subtrees. The updated snapshot
-keeps its scan date and previous comparison, and records bytes moved to the Recycle
-Bin. Partial failures leave the snapshot unchanged and ask you to rescan. The real
-Recycle Bin test is ignored by default because it changes the Windows Recycle Bin.
+keeps its scan date and previous comparison, and records recycled and permanently
+deleted bytes separately. Recycling allows restoration; permanent deletion frees
+space immediately and can't be undone. Partial failures leave the snapshot unchanged
+and ask you to rescan. The real shell test for both modes is ignored by default
+because it deletes temporary files and changes the Windows Recycle Bin.
 
 The tree is a snapshot: files can change or disappear after scanning. Rescan to
 refresh it. Aggregates have no filesystem path, so cannot be opened or revealed.
@@ -95,5 +103,6 @@ files when the gap reaches the larger of 1 GiB and 1% of capacity. Saved scans u
 their recorded drive capacity. Unreadable items, system files, restore points and
 file-system overhead can contribute; administrator access can include more.
 Negative gaps from hard links or logical compressed-file sizes are not shown.
-Bytes moved to the Recycle Bin remain accounted for in this calculation and appear
-beside the scanned size. Space is freed when you empty the Recycle Bin.
+Recycled and permanently deleted bytes remain accounted for in this calculation
+against the scan's drive usage. Only recycled bytes appear beside the scanned size;
+that space is freed when you empty the Recycle Bin.
