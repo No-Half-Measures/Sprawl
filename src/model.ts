@@ -4,6 +4,7 @@ export interface TreeNode { id: number | null; name: string; kind: 'dir' | 'file
 export interface LargeFile { id: number; name: string; relativePath: string; size: number; category: string }
 export interface Breakdown { category: string; bytes: number; files: number }
 export interface Drive { mount: string; label: string; total: number; free: number }
+export interface AdminStatus { supported: boolean; elevated: boolean; alwaysElevate: boolean; declined: boolean }
 export interface SavedScan { version: number; path: string; scannedAt: number; size: number; files: number; folders: number; errors: number; driveFree: number | null; driveTotal: number | null }
 export interface Progress { files: number; folders: number; bytes: number; errors: number; currentPath: string }
 export const emptyProgress: Progress = { files: 0, folders: 0, bytes: 0, errors: 0, currentPath: '' };

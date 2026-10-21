@@ -1,4 +1,4 @@
-import { formatAge, formatSize, isDriveRoot, middlePath, staleness, type Drive, type SavedScan } from './model';
+import { formatAge, formatSize, isDriveRoot, middlePath, staleness, type AdminStatus, type Drive, type SavedScan } from './model';
 
 interface Props {
   drives: Drive[];
@@ -9,6 +9,10 @@ interface Props {
   saved: SavedScan[];
   openSaved: (path: string, scannedAt: number) => Promise<void>;
   clearSaved: () => Promise<void>;
+  admin?: AdminStatus | null;
+  adminBusy?: boolean;
+  restartAsAdmin: () => Promise<void>;
+  setAlwaysElevate: (enabled: boolean) => Promise<void>;
   now?: number;
 }
 
@@ -21,9 +25,13 @@ export default function HomeScreen({
   saved,
   openSaved,
   clearSaved,
+  admin,
+  adminBusy = false,
+  restartAsAdmin,
+  setAlwaysElevate,
   now = Date.now(),
 }: Props) {
-  const disabled = !ready || opening !== null;
+  const disabled = !ready || opening !== null || adminBusy;
   const folders = saved.filter(s => !drives.some(d => isDriveRoot(s.path, d.mount)));
   return (
     <section className="home-content">
@@ -43,6 +51,25 @@ export default function HomeScreen({
           <h2>Your drives</h2>
           <span>{drives.length} available</span>
         </div>
+        {admin?.supported && (
+          <div className="admin-row">
+            <span>{admin.elevated
+              ? 'Running as administrator · drive scans use the fast path.'
+              : 'Drive scans are much faster when DiskMapper runs as administrator.'}</span>
+            {!admin.elevated && (
+              <button disabled={disabled} onClick={() => void restartAsAdmin()}>Restart as administrator</button>
+            )}
+            <label>
+              <input
+                type="checkbox"
+                checked={admin.alwaysElevate}
+                disabled={disabled}
+                onChange={e => void setAlwaysElevate(e.target.checked)}
+              />
+              Always run as administrator
+            </label>
+          </div>
+        )}
         <div className="drive-grid">
           {drives.map(d => {
             const scan = saved.find(s => isDriveRoot(s.path, d.mount));

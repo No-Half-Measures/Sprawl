@@ -1,4 +1,5 @@
 use crate::{
+    admin::{self, Settings},
     cache::{self, SavedScan},
     scanner::{self, Kind, Tree},
 };
@@ -29,6 +30,89 @@ fn saved(tree: &Tree, scanned_at: u64) -> SavedScan {
         errors: tree.errors,
         drive_free: Some(100),
         drive_total: Some(1000),
+    }
+}
+
+#[test]
+fn settings_default_when_missing() {
+    let dir = tempfile::tempdir().unwrap();
+    assert!(!admin::read_settings(&dir.path().join("settings.json")).always_elevate);
+}
+
+#[test]
+fn settings_round_trip() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("data/settings.json");
+    for enabled in [true, false, true] {
+        admin::write_settings(
+            &path,
+            &Settings {
+                always_elevate: enabled,
+            },
+        )
+        .unwrap();
+        assert_eq!(admin::read_settings(&path).always_elevate, enabled);
+        assert_eq!(
+            serde_json::from_slice::<serde_json::Value>(&fs::read(&path).unwrap()).unwrap(),
+            serde_json::json!({ "alwaysElevate": enabled })
+        );
+        assert!(!path.with_extension("json.tmp").exists());
+    }
+}
+
+#[test]
+fn settings_default_when_corrupt_or_unknown() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("settings.json");
+    for contents in [
+        "not json",
+        "{",
+        "{}",
+        r#"{"alwaysElevate": "yes"}"#,
+        r#"{"alwaysElevate": true, "unknown": 1}"#,
+    ] {
+        fs::write(&path, contents).unwrap();
+        assert!(!admin::read_settings(&path).always_elevate);
+    }
+}
+
+#[cfg(windows)]
+#[test]
+fn elevated_arguments_preserve_windows_quoting() {
+    use std::os::windows::ffi::OsStringExt;
+    use windows_sys::Win32::{Foundation::LocalFree, UI::Shell::CommandLineToArgvW};
+
+    let args = [
+        "",
+        "plain",
+        "two words",
+        r#"a"b"#,
+        r"C:\with spaces\",
+        "日本語",
+    ];
+    let mut command: Vec<u16> = "app.exe ".encode_utf16().collect();
+    for arg in args {
+        command.extend(admin::quote_arg(std::ffi::OsStr::new(arg)));
+        command.push(b' ' as u16);
+    }
+    command.push(0);
+    let mut count = 0;
+    unsafe {
+        let parsed = CommandLineToArgvW(command.as_ptr(), &mut count);
+        assert!(!parsed.is_null());
+        assert_eq!(count as usize, args.len() + 1);
+        for (index, arg) in args.iter().enumerate() {
+            let ptr = *parsed.add(index + 1);
+            let mut len = 0;
+            while *ptr.add(len) != 0 {
+                len += 1;
+            }
+            assert_eq!(
+                std::ffi::OsString::from_wide(std::slice::from_raw_parts(ptr, len)),
+                *arg
+            );
+        }
+        LocalFree(parsed.cast());
     }
 }
 

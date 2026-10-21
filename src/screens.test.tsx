@@ -111,6 +111,8 @@ describe('screen details', () => {
         saved={[]}
         openSaved={async () => {}}
         clearSaved={async () => {}}
+        restartAsAdmin={async () => {}}
+        setAlwaysElevate={async () => {}}
       />,
     );
     expect(html.match(/class="drive-card"/g)).toHaveLength(5);
@@ -132,7 +134,7 @@ describe('saved scan screens', () => {
     const openSaved = vi.fn(async (_path: string) => {});
     const clearSaved = vi.fn(async () => {});
     const folder = { ...scan, path: 'C:\\Users\\Example' };
-    const screen = HomeScreen({ drives: [drive], ready: true, start: async () => {}, pickFolder: async () => {}, saved: [scan, folder], openSaved, clearSaved, now });
+    const screen = HomeScreen({ drives: [drive], ready: true, start: async () => {}, pickFolder: async () => {}, saved: [scan, folder], openSaved, clearSaved, restartAsAdmin: async () => {}, setAlwaysElevate: async () => {}, now });
     const html = renderToStaticMarkup(screen);
     expect(html).toContain('Last scanned 3 days ago · 412 GB');
     expect(html).toContain('Open last scan');
@@ -147,7 +149,7 @@ describe('saved scan screens', () => {
   });
   it('labels only the opening snapshot and disables all open and scan buttons', () => {
     const folder = { ...scan, path: 'C:\\Users\\Example' };
-    const props = { drives: [drive], ready: true, start: async () => {}, pickFolder: async () => {}, saved: [scan, folder], openSaved: async () => {}, clearSaved: async () => {}, now };
+    const props = { drives: [drive], ready: true, start: async () => {}, pickFolder: async () => {}, saved: [scan, folder], openSaved: async () => {}, clearSaved: async () => {}, restartAsAdmin: async () => {}, setAlwaysElevate: async () => {}, now };
     for (const opening of [scan.path, folder.path]) {
       const html = renderToStaticMarkup(<HomeScreen {...props} opening={opening} />);
       const controls = html.match(/<button\b[^>]*>[^<]*<\/button>/g)!;
@@ -157,7 +159,7 @@ describe('saved scan screens', () => {
     expect(renderToStaticMarkup(<HomeScreen {...props} />)).not.toContain('disabled=""');
   });
   it('styles stale drive scans as warnings and fresh scans neutrally', () => {
-    const props = { drives: [drive], ready: true, start: async () => {}, pickFolder: async () => {}, openSaved: async () => {}, clearSaved: async () => {}, now };
+    const props = { drives: [drive], ready: true, start: async () => {}, pickFolder: async () => {}, openSaved: async () => {}, clearSaved: async () => {}, restartAsAdmin: async () => {}, setAlwaysElevate: async () => {}, now };
     expect(renderToStaticMarkup(<HomeScreen {...props} saved={[scan]} />)).not.toContain('last-scan warning');
     expect(renderToStaticMarkup(<HomeScreen {...props} saved={[{ ...scan, scannedAt: now - 8 * 86400000 }]} />)).toContain('last-scan warning');
     expect(renderToStaticMarkup(<HomeScreen {...props} saved={[{ ...scan, driveFree: drive.free + 18 * 1024 ** 3 }]} />)).toContain('last-scan warning');
@@ -184,6 +186,63 @@ describe('saved scan screens', () => {
       expect(html).toContain('snapshot warning');
       expect(html).toContain(' · This may be out of date.');
       expect(html).toContain('Free space has changed by 18 GB since this scan.');
+    }
+  });
+});
+
+describe('administrator controls', () => {
+  const props = { drives: [], ready: true, saved: [], start: async () => {}, pickFolder: async () => {}, openSaved: async () => {}, clearSaved: async () => {}, restartAsAdmin: async () => {}, setAlwaysElevate: async () => {} };
+  const admin = { supported: true, elevated: false, alwaysElevate: false, declined: false };
+  type Control = { children?: ReactNode; checked?: boolean; disabled?: boolean; onClick?: () => void; onChange?: (e: { target: { checked: boolean } }) => void };
+  function controls(node: ReactNode): ReactElement<Control>[] {
+    return Children.toArray(node).flatMap(child => {
+      if (!isValidElement<Control>(child)) return [];
+      return child.type === 'button' || child.type === 'input' ? [child] : controls(child.props.children);
+    });
+  }
+  it('offers restart and an unchecked preference when not elevated', () => {
+    const screen = HomeScreen({ ...props, admin });
+    const html = renderToStaticMarkup(screen);
+    expect(html).toContain('Drive scans are much faster when DiskMapper runs as administrator.');
+    expect(html).toContain('Restart as administrator');
+    expect(html).toContain('Always run as administrator');
+    const checkbox = controls(screen).find(c => c.type === 'input')!;
+    expect(checkbox.props.checked).toBe(false);
+    expect(checkbox.props.disabled).toBe(false);
+  });
+  it('shows the fast path and keeps the preference when elevated', () => {
+    const html = renderToStaticMarkup(<HomeScreen {...props} admin={{ ...admin, elevated: true, alwaysElevate: true }} />);
+    expect(html).toContain('Running as administrator · drive scans use the fast path.');
+    expect(html).not.toContain('Restart as administrator');
+    expect(html).toContain('Always run as administrator');
+    expect(html).toContain('checked=""');
+  });
+  it('hides administrator controls when unsupported or not loaded', () => {
+    for (const status of [undefined, null, { ...admin, supported: false }]) {
+      const html = renderToStaticMarkup(<HomeScreen {...props} admin={status} />);
+      expect(html).not.toContain('admin-row');
+      expect(html).not.toContain('administrator');
+    }
+  });
+  it('calls restart and toggles the controlled preference in both directions', () => {
+    const restartAsAdmin = vi.fn(async () => {});
+    const setAlwaysElevate = vi.fn(async (_enabled: boolean) => {});
+    for (const enabled of [false, true]) {
+      const screen = HomeScreen({ ...props, admin: { ...admin, alwaysElevate: enabled }, restartAsAdmin, setAlwaysElevate });
+      const items = controls(screen);
+      if (!enabled) items.find(c => c.props.children === 'Restart as administrator')!.props.onClick!();
+      const checkbox = items.find(c => c.type === 'input')!;
+      expect(checkbox.props.checked).toBe(enabled);
+      checkbox.props.onChange!({ target: { checked: !enabled } });
+    }
+    expect(restartAsAdmin).toHaveBeenCalledOnce();
+    expect(setAlwaysElevate.mock.calls).toEqual([[true], [false]]);
+  });
+  it('disables restart and the preference while home is busy', () => {
+    for (const busy of [{ ready: false }, { opening: 'C:\\' }, { adminBusy: true }]) {
+      const items = controls(HomeScreen({ ...props, admin, ...busy }));
+      expect(items.find(c => c.props.children === 'Restart as administrator')!.props.disabled).toBe(true);
+      expect(items.find(c => c.type === 'input')!.props.disabled).toBe(true);
     }
   });
 });

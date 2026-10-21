@@ -8,6 +8,7 @@ import ResultsScreen, { SnapshotBanner } from './ResultsScreen';
 import {
   emptyProgress,
   isDriveRoot,
+  type AdminStatus,
   type Breakdown,
   type Drive,
   type LargeFile,
@@ -43,6 +44,8 @@ export default function App() {
   const [phase, setPhase] = useState<Phase>('home');
   const [drives, setDrives] = useState<Drive[]>([]);
   const [saved, setSaved] = useState<SavedScan[]>([]);
+  const [admin, setAdmin] = useState<AdminStatus | null>(null);
+  const [adminBusy, setAdminBusy] = useState(false);
   const [snapshot, setSnapshot] = useState<SavedScan | null>(null);
   const [ready, setReady] = useState(false);
   const [error, setError] = useState('');
@@ -68,6 +71,17 @@ export default function App() {
   }[]>([]);
   const launching = useRef(false);
   const handler = useRef<(type: string, message: ScanMessage) => void>(() => { });
+  useEffect(() => {
+    let disposed = false;
+    invoke<AdminStatus>('admin_status').then(status => {
+      if (disposed) return;
+      setAdmin(status);
+      if (status.declined) setNotice('Continuing without administrator access.');
+    }).catch(e => {
+      if (!disposed) setError(String(e));
+    });
+    return () => { disposed = true; };
+  }, []);
   async function refreshSaved() {
     try { setSaved(await invoke<SavedScan[]>('list_saved_scans')); }
     catch (e) { setError(String(e)); }
@@ -236,6 +250,22 @@ export default function App() {
     try { await invoke('clear_saved_scans'); await refreshSaved(); }
     catch (e) { setError(String(e)); }
   }
+  async function restartAsAdmin() {
+    setAdminBusy(true);
+    setError('');
+    try { await invoke('restart_as_admin'); }
+    catch (e) { setError(String(e)); }
+    finally { setAdminBusy(false); }
+  }
+  async function setAlwaysElevate(enabled: boolean) {
+    setAdminBusy(true);
+    setError('');
+    try {
+      await invoke('set_always_elevate', { enabled });
+      setAdmin(status => status && { ...status, alwaysElevate: enabled });
+    } catch (e) { setError(String(e)); }
+    finally { setAdminBusy(false); }
+  }
   async function pickFolder() {
     try {
       const path = await open({ directory: true, multiple: false, title: 'Choose a folder to map' });
@@ -403,6 +433,10 @@ export default function App() {
           saved={saved}
           openSaved={openSaved}
           clearSaved={clearSaved}
+          admin={admin}
+          adminBusy={adminBusy}
+          restartAsAdmin={restartAsAdmin}
+          setAlwaysElevate={setAlwaysElevate}
         />
       )}
       {phase === 'scanning' && (

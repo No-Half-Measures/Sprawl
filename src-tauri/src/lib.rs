@@ -1,3 +1,4 @@
+mod admin;
 mod cache;
 mod mft;
 mod scanner;
@@ -53,6 +54,7 @@ struct AppState {
     session: Mutex<Session>,
     worker: Mutex<()>,
     cache: Mutex<()>,
+    admin_declined: AtomicBool,
 }
 
 fn tree(state: &AppState) -> Result<Arc<Tree>, String> {
@@ -126,6 +128,53 @@ fn scans_dir(app: &tauri::AppHandle) -> Result<PathBuf, String> {
         .app_local_data_dir()
         .map(|p| p.join("scans"))
         .map_err(|e| e.to_string())
+}
+
+fn settings_path(app: &tauri::AppHandle) -> Result<PathBuf, String> {
+    app.path()
+        .app_local_data_dir()
+        .map(|p| p.join("settings.json"))
+        .map_err(|e| e.to_string())
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct AdminStatus {
+    supported: bool,
+    elevated: bool,
+    always_elevate: bool,
+    declined: bool,
+}
+
+#[tauri::command]
+fn admin_status(app: tauri::AppHandle, state: State<'_, AppState>) -> AdminStatus {
+    let settings = settings_path(&app)
+        .map(|path| admin::read_settings(&path))
+        .unwrap_or_default();
+    AdminStatus {
+        supported: cfg!(windows),
+        elevated: admin::elevated(),
+        always_elevate: settings.always_elevate,
+        declined: state.admin_declined.load(Ordering::Relaxed),
+    }
+}
+
+#[tauri::command]
+fn set_always_elevate(enabled: bool, app: tauri::AppHandle) -> Result<(), String> {
+    admin::write_settings(
+        &settings_path(&app)?,
+        &admin::Settings {
+            always_elevate: enabled,
+        },
+    )
+    .map_err(|e| format!("Could not save administrator preference: {e}"))
+}
+
+#[tauri::command]
+fn restart_as_admin(app: tauri::AppHandle) -> Result<(), String> {
+    admin::relaunch()?;
+    app.exit(0);
+    Ok(())
 }
 
 #[tauri::command]
@@ -515,7 +564,28 @@ pub fn run() {
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_dialog::init())
         .manage(AppState::default())
+        .setup(|app| {
+            if cfg!(windows)
+                && settings_path(app.handle())
+                    .map(|path| admin::read_settings(&path).always_elevate)
+                    .unwrap_or(false)
+                && !admin::elevated()
+                && !std::env::args_os().any(|arg| arg == "--elevated")
+            {
+                match admin::relaunch() {
+                    Ok(()) => app.handle().exit(0),
+                    Err(_) => app
+                        .state::<AppState>()
+                        .admin_declined
+                        .store(true, Ordering::Relaxed),
+                }
+            }
+            Ok(())
+        })
         .invoke_handler(tauri::generate_handler![
+            admin_status,
+            set_always_elevate,
+            restart_as_admin,
             list_drives,
             list_saved_scans,
             load_saved_scan,

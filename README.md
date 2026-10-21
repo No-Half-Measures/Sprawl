@@ -34,7 +34,8 @@ the MFT and the directory walk and prints timings and differences.
 
 - Rust scans on a background thread with one Rayon task per directory. When the
   app runs as administrator, whole NTFS drive scans read the master file table
-  directly instead, falling back to the directory walk on any failure. An
+  directly instead, falling back to the directory walk on any failure. Home can
+  relaunch the app elevated through UAC, once or on every start. An
   atomic flag cancels scans; a worker mutex serializes replacements. Completed
   trees are immutable arena snapshots. Files store their own names, with parent
   indices used to reconstruct paths. Folder counts exclude the folder itself.
