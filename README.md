@@ -1,25 +1,186 @@
-# Sprawl
+<p align="center">
+  <img src="public/sprawl.svg" width="96" alt="Sprawl logo">
+</p>
 
-A Windows disk-space visualizer built with Tauri 2, Rust and React.
-Choose a drive or folder, then explore its largest contents in a canvas treemap.
-Delete unwanted items after confirming in the app: choose the Recycle Bin or
-confirm a second time to delete permanently. If Windows cannot recycle an item,
-it asks before permanently deleting it. Drive roots, essential Windows folders
-and the scan root are protected. Everything else is read-only.
-See [DESIGN.md](DESIGN.md) for the product specification.
+<h1 align="center">Sprawl</h1>
 
-## Run
+<p align="center">
+  A disk-space visualizer for Windows that scans a 2-million-file system drive
+  in about 3.5 seconds.
+</p>
 
-Run `npm install` once, then `npm run tauri dev` to start the desktop app.
-`npm run build` builds the frontend and `npm run tauri build` packages the app.
-A plain browser preview can't scan, because only the Tauri backend reads the disk.
+Sprawl scans a drive or folder and draws it as a treemap. Each rectangle's area
+matches the bytes it uses, so the biggest space hogs are the biggest blocks. A
+sorted list beside the map gives exact sizes. As administrator, Sprawl reads the
+NTFS master file table directly instead of opening every folder, which is where
+the speed comes from.
 
-The header's settings (cog) menu offers **Always run as administrator** and can
-add **Scan with Sprawl** to Explorer's right-click menu for folders,
-folder backgrounds and drives (under **Show more options** on Windows 11).
-Picking it scans that path in the open window, or starts Sprawl if it isn't running.
+Sprawl is built with [Tauri 2](https://tauri.app), Rust and React.
 
-## Checks
+## Features
+
+- **Fast scans.** As administrator, Sprawl reads whole NTFS drives straight
+  from the master file table. Without admin, it walks folders and drives in
+  parallel. Drive rescans try to replay the NTFS change journal and only fall
+  back to a full read when they can't.
+- **Treemap.** The map shows the current folder three levels deep, coloured by
+  file type, and stays sharp on high-DPI screens. Hover a block for its size and
+  item counts. Click a folder to zoom in. Right-click for actions.
+- **Sorted contents, largest files and type breakdown.** Each folder lists its
+  children by size and percentage, the 50 largest files under it, and how much
+  space goes to Video, Images, Audio, Documents, Archives, Code, Apps & system
+  and Other. Hover a category to highlight its files in the map.
+- **Changes since last scan.** Sprawl saves each completed scan. When you scan
+  the same path again, it shows how much each folder grew or shrank, which items
+  are new, what disappeared, and the 50 files that grew the most.
+- **Saved scans.** The home screen reopens the last scan of any drive or recent
+  folder without rescanning. Saved results show their age and warn you once
+  they look stale.
+- **Missing space.** At a drive root, Sprawl reports how much used space the
+  scan couldn't account for. System files, restore points and unreadable
+  folders usually explain the gap.
+- **Safe deletion.** You can send an item to the Recycle Bin, or delete it
+  permanently after a second confirmation. Sprawl refuses to delete drive
+  roots, the scan root, the Windows and Program Files folders, ProgramData and
+  your user profile folder. It never opens or runs files. It can only reveal
+  them in Explorer.
+- **Explorer integration.** Add **Scan with Sprawl** to the right-click menu
+  for folders, folder backgrounds and drives. This doesn't need admin.
+- **Keyboard shortcuts.** Backspace or Alt+Left goes back, Alt+Up goes to the
+  parent, Delete opens the delete dialog, Shift+F10 opens a context menu, and
+  Escape clears highlights.
+- **Light and dark themes.** Sprawl follows the Windows setting.
+
+## Performance
+
+I ran each tool three times on the same machine against the same drive, with
+default settings. Lower is better.
+
+Full drive scan of `C:\` as administrator. The drive holds about 2.08 million
+files and 549,000 folders, 980 GB in total.
+
+| Tool | Median | Runs |
+| --- | ---: | --- |
+| **Sprawl 0.1.0**, MFT read | **3.5 s** | 3.4, 3.5, 4.4 s |
+| WizTree 4.14 | 10.5 s | 9.5, 10.5, 11.7 s |
+| WinDirStat 2.8.0 | 13.3 s | 13.2, 13.3, 16.6 s |
+| Sprawl 0.1.0, directory walk without MFT | 15.2 s | 6 runs, 11.0 to 28.6 s |
+
+Folder scan of `C:\Windows`, about 199,000 files and 141,000 folders.
+
+| Tool | Median | Runs |
+| --- | ---: | --- |
+| **Sprawl 0.1.0** | **2.7 s** | 2.6, 2.7, 2.7 s |
+| WinDirStat 2.8.0 | 8.4 s | 8.3, 8.4, 8.5 s |
+| WizTree 4.14 | 31.1 s | 31.1, 31.1, 34.7 s |
+
+WizTree is fast on a whole drive but took three times longer on a single
+folder than on all of `C:\`. If you mostly scan folders, that matters.
+
+The test machine has an AMD Ryzen 9 7900X3D, 64 GB of RAM and a 1 TB Sabrent
+NVMe SSD, running Windows 11 Home build 26200. Every tool ran elevated, one at a
+time, after a warm-up scan.
+
+### How these were measured
+
+The three tools weren't timed the same way, so treat the tables as a rough
+comparison.
+
+- **Sprawl.** The time is what Sprawl's own timing tests print for the scan
+  itself. App startup and drawing the first treemap aren't included.
+- **WizTree.** The time is the wall clock for
+  `WizTree64.exe "C:\" /export=out.csv /admin=1 /exportmaxdepth=1`. That
+  includes process startup and writing a small CSV.
+- **WinDirStat.** The time is the wall clock for
+  `WinDirStat.exe /saveto out.csv C:\`. That includes process startup and
+  writing every item to the CSV, which came to 518 MB for `C:\`. Some of its
+  time goes to that file.
+
+Disk, CPU, file count and the filesystem cache all move these numbers. On this
+machine, the first directory walk after the other tools ran took 28.6 s. Later
+walks took 11 to 19 s.
+
+To reproduce the Sprawl numbers, run these from an elevated terminal in
+`src-tauri`:
+
+```text
+cargo test --release mft_matches_directory_scan -- --ignored --nocapture
+cargo test --release smoke_real_directory -- --ignored --nocapture
+```
+
+The first command scans `C:\` through the MFT and then through the directory
+walk, and prints both times. Set `SPRAWL_MFT_DRIVE` to scan another drive. The
+second command scans `C:\Windows\System32` by default. Set
+`SPRAWL_SMOKE_PATH=C:\Windows` to match the folder benchmark.
+
+### Why it's fast
+
+- **Direct MFT reads.** For a whole NTFS drive, Sprawl reads the master file
+  table with overlapping unbuffered reads and builds the tree from its records,
+  without opening a single directory. If anything goes wrong, it falls back to
+  the directory walk.
+- **Parallel walk.** Folder scans and non-admin scans run one
+  [Rayon](https://github.com/rayon-rs/rayon) task per directory.
+- **Compact tree.** Nodes sit in one arena and store only their own name, not
+  the full path. Sprawl rebuilds paths from parent links when it needs one.
+- **Small IPC payloads.** The UI asks the backend for only what it draws, three
+  levels and 100 children per folder. Sprawl merges the rest of each folder into
+  one "N smaller items" entry, so totals still add up.
+- **Fast reopen.** Sprawl stores saved scans as zstd-compressed bincode and
+  reopens them without rescanning the disk.
+
+## Getting started
+
+Sprawl is a Windows app. There are no prebuilt releases yet, so you'll need to
+build it from source.
+
+You need:
+
+- [Node.js](https://nodejs.org) 20.19+ or 22.12+
+- stable [Rust](https://rustup.rs)
+- the [Tauri prerequisites for Windows](https://tauri.app/start/prerequisites/),
+  which are the Microsoft C++ Build Tools and WebView2
+
+```text
+npm install
+npm run tauri dev      # run in development
+npm run tauri build    # build an installer under src-tauri/target/release/bundle
+```
+
+`npm run dev` opens the UI in a plain browser, but it can't scan. Only the
+Tauri backend reads the disk.
+
+## Usage
+
+1. Pick a drive on the home screen, or choose **Scan a folder…**.
+2. Click folders in the treemap to zoom in. Use the breadcrumb or Backspace to
+   go back.
+3. Right-click an item to open it, reveal it in Explorer, copy its path or
+   delete it.
+
+**Admin mode.** Without admin rights, Sprawl skips folders it can't read and
+uses the slower directory walk. Choose **Restart as administrator** on the home
+screen, or turn on **Always run as administrator** in the settings menu behind
+the cog icon.
+
+**Explorer menu.** Turn on **Scan with Sprawl** in the settings menu to add it to
+Explorer's right-click menu. On Windows 11 it sits under **Show more options**.
+If Sprawl is already open, the scan runs in that window.
+
+**Saved scans.** Sprawl keeps them in its local app data folder. Each path keeps
+its latest and previous scan, for up to ten paths. **Clear saved scans** removes
+them all.
+
+## Limitations
+
+- Windows only.
+- Sprawl reports logical file sizes. It ignores compression, sparse files and
+  hard links, so totals can differ from the space actually allocated on disk.
+- Sprawl doesn't follow symlinks or junctions. It counts cloud placeholders,
+  such as OneDrive files, at their logical size.
+- Results are a snapshot. Rescan to pick up files that changed afterwards.
+
+## Development
 
 ```text
 npm run build
@@ -27,93 +188,31 @@ npm test
 cd src-tauri
 cargo test
 cargo clippy --all-targets -- -D warnings
-cargo build
 cargo fmt --check
-cargo test smoke_real_directory -- --ignored --nocapture
 ```
 
-The manual smoke test scans `C:\Windows\System32`; set `SPRAWL_SMOKE_PATH`
-to use another existing directory. Tests create temporary fixtures. The link test
-tries a symlink, then a Windows junction, and reports a skip if neither is allowed.
+Tests create temporary fixtures. The link test tries a symlink, then a junction,
+and reports a skip if Windows allows neither. Tests that scan real drives or
+call the Windows shell to delete files carry `#[ignore]`. Run them with
+`--ignored`.
 
-`cargo test --release mft_matches_directory_scan -- --ignored --nocapture`, run
-from an elevated terminal, scans `C:\` (or `SPRAWL_MFT_DRIVE`) through both
-the MFT and the directory walk and prints timings and differences.
+[DESIGN.md](DESIGN.md) has the full product specification, IPC commands and
+saved-scan format. A few details live only here:
 
-## Implementation notes
-
-- Rust scans on a background thread with one Rayon task per directory. When the
-  app runs as administrator, whole NTFS drive scans read the master file table
-  directly instead, falling back to the directory walk on any failure. Home can
-  relaunch the app elevated through UAC; the header's settings menu can enable
-  elevation on every start. An atomic flag cancels scans and a worker mutex
-  serializes replacements. Completed trees are immutable arena snapshots. Each
-  node stores only its own name, and paths are rebuilt from parent indices.
-  Folder counts exclude the folder itself.
-- NTFS drive rescans replay the USN journal from the saved checkpoint. If the
-  journal history or the changed records can't be read, Sprawl runs a full scan.
-- The scanner counts and skips every filesystem error below the selected root.
-  Symlinks and junctions are excluded; cloud placeholders and dedup reparse
-  points remain included. Sizes are logical lengths;
-  sparse/compressed allocation and hard-link deduplication are not measured.
 - `get_tree` caps depth at 8 and children per folder at 500, and returns about
-  8,000 nodes at most. Each group of omitted siblings becomes one synthetic
-  `N smaller items` node with `id: null`, so byte totals still add up.
-  The UI asks for 3 levels and 100 children per folder.
-- `get_largest_files` returns at most 1,000 files (the UI requests 50).
-  `get_type_breakdown` returns all eight categories, including empty ones.
-- `scan-progress` contains `{ scanId, files, folders, bytes, errors, currentPath }`;
-  `scan-complete` contains `{ scanId, root, errors }`; `scan-cancelled` contains
-  `{ scanId }`; `scan-error` contains `{ scanId, message }`.
-  `start_scan` returns the scan ID, which lets the UI ignore late events from an
-  older scan.
-- Beyond the commands in DESIGN.md, `get_node_path` backs Copy path and
-  `open_folder` opens a scanned directory. Files can only be revealed, never run.
-- `delete_item(nodeId, permanent)` returns `{ root, recycled, deleted }`, with
-  separate byte totals for each mode in the current snapshot.
-- [src/categories.json](src/categories.json) owns category IDs, labels, colors,
-  and extensions. Rust embeds the same file that React imports.
-- Backspace / Alt+Left goes back, Alt+Up opens the parent, and Escape clears
-  highlights and menus. Tab navigates controls; Enter opens a folder row;
-  Shift+F10 opens its context menu. Copy path uses the WebView clipboard API.
-  Delete on a Contents, Largest files or Grown since row opens the same dialog as
-  **Delete…** in the context menu. It shows the item's name, path, size and folder
-  counts, with Cancel initially focused. Choose **Move to Recycle Bin** or
-  **Delete permanently**; permanent deletion needs a second confirmation, with
-  Back initially focused. Tab stays inside either step; Escape cancels unless running.
+  8,000 nodes at most. Omitted siblings become one synthetic node with
+  `id: null`.
+- `get_largest_files` returns at most 1,000 files. `get_type_breakdown` returns
+  all eight categories, including empty ones.
+- `start_scan` returns a scan ID, and every scan event carries it as `scanId`,
+  so the UI can ignore late events from an older scan. The events are
+  `scan-progress` with `{ scanId, files, folders, bytes, errors, currentPath }`,
+  `scan-complete` with `{ scanId, root, errors }`, `scan-cancelled` with
+  `{ scanId }` and `scan-error` with `{ scanId, message }`.
+- `get_node_path` backs Copy path, and `open_folder` opens a scanned directory.
+- [src/categories.json](src/categories.json) defines category IDs, labels,
+  colours and extensions. The Rust backend and the React frontend share it.
 
-Deleting updates the map, panels and navigation without rescanning. Detached node
-IDs stay stable in memory; saved trees omit deleted subtrees. The updated snapshot
-keeps its scan date and previous comparison, and records recycled and permanently
-deleted bytes separately. Recycling allows restoration; permanent deletion frees
-space immediately and can't be undone. A partial failure leaves the snapshot
-unchanged and asks you to rescan. The test that calls the real Windows shell for
-both modes is `#[ignore]`d, because it deletes temporary files and puts items in
-the Recycle Bin.
+## License
 
-The tree is a snapshot: files can change or disappear after scanning. Rescan to
-refresh it. Aggregates have no filesystem path, so you can't open or reveal them.
-Zero-byte items remain available in Contents but occupy no treemap area.
-
-Sprawl saves every completed scan under `scans/` in the app's local data
-directory. Home can reopen the last scan of a drive or a recent folder without
-rescanning. Each path keeps its latest snapshot plus one previous snapshot, for
-up to ten paths. Previous snapshots use the same format under `scans/previous/`.
-**Clear saved scans** removes this cache. Saved results show their date, and warn
-once they are seven days old or drive free space has moved by at least 1 GiB or
-1% of capacity. **Rescan** refreshes the snapshot.
-
-When an earlier scan of the same path exists, results compare against it. Folder
-totals and Contents show size changes, new items and removed direct children.
-Switch **Largest files** to **Grown since** for the 50 files with the most growth.
-`get_changes(nodeId)` computes the comparison lazily and caches it for the current
-tree, separately from the map and other panels.
-
-At a drive root, **Not found by scan** explains used space beyond the scanned
-files when the gap reaches the larger of 1 GiB and 1% of capacity. Saved scans use
-their recorded drive capacity. Unreadable items, system files, restore points and
-file-system overhead can contribute; administrator access can include more.
-Negative gaps from hard links or logical compressed-file sizes are not shown.
-Recycled and permanently deleted bytes remain accounted for in this calculation
-against the scan's drive usage. Only recycled bytes appear beside the scanned size;
-that space is freed when you empty the Recycle Bin.
+[MIT](LICENSE)
