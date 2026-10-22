@@ -10,14 +10,14 @@ See [DESIGN.md](DESIGN.md) for the product specification.
 
 ## Run
 
-Dependencies are already installed. Start the desktop app with `npm run tauri dev`.
-`npm run build` builds the frontend; `npm run tauri build` packages the app.
-A standalone browser preview cannot scan: disk access is provided by the Tauri backend.
+Run `npm install` once, then `npm run tauri dev` to start the desktop app.
+`npm run build` builds the frontend and `npm run tauri build` packages the app.
+A plain browser preview can't scan, because only the Tauri backend reads the disk.
 
 The header's settings (cog) menu offers **Always run as administrator** and can
 add **Scan with Sprawl** to Explorer's right-click menu for folders,
 folder backgrounds and drives (under **Show more options** on Windows 11).
-It scans the chosen path in the existing window, or opens Sprawl if needed.
+Picking it scans that path in the open window, or starts Sprawl if it isn't running.
 
 ## Checks
 
@@ -46,26 +46,28 @@ the MFT and the directory walk and prints timings and differences.
   app runs as administrator, whole NTFS drive scans read the master file table
   directly instead, falling back to the directory walk on any failure. Home can
   relaunch the app elevated through UAC; the header's settings menu can enable
-  elevation on every start. An atomic flag cancels scans; a worker mutex
-  serializes replacements. Completed
-  trees are immutable arena snapshots. Files store their own names, with parent
-  indices used to reconstruct paths. Folder counts exclude the folder itself.
-- NTFS drive rescans replay the USN journal when a saved checkpoint is usable, falling back to a full scan when history or records are unavailable.
-- All filesystem errors below the selected root are counted and skipped.
+  elevation on every start. An atomic flag cancels scans and a worker mutex
+  serializes replacements. Completed trees are immutable arena snapshots. Each
+  node stores only its own name, and paths are rebuilt from parent indices.
+  Folder counts exclude the folder itself.
+- NTFS drive rescans replay the USN journal from the saved checkpoint. If the
+  journal history or the changed records can't be read, Sprawl runs a full scan.
+- The scanner counts and skips every filesystem error below the selected root.
   Symlinks and junctions are excluded; cloud placeholders and dedup reparse
   points remain included. Sizes are logical lengths;
   sparse/compressed allocation and hard-link deduplication are not measured.
-- `get_tree` bounds depth to 8 and individual children to 500, with a response
-  budget of approximately 8,000 nodes. Every omitted sibling group becomes a
-  synthetic `N smaller items` node with `id: null`, preserving byte totals.
+- `get_tree` caps depth at 8 and children per folder at 500, and returns about
+  8,000 nodes at most. Each group of omitted siblings becomes one synthetic
+  `N smaller items` node with `id: null`, so byte totals still add up.
   The UI asks for 3 levels and 100 children per folder.
 - `get_largest_files` returns at most 1,000 files (the UI requests 50).
   `get_type_breakdown` returns all eight categories, including empty ones.
 - `scan-progress` contains `{ scanId, files, folders, bytes, errors, currentPath }`;
   `scan-complete` contains `{ scanId, root, errors }`; `scan-cancelled` contains
   `{ scanId }`; `scan-error` contains `{ scanId, message }`.
-  `start_scan` returns the scan ID. IDs prevent late events changing a newer scan.
-- In addition to the commands in the spec, `get_node_path` supports Copy path and
+  `start_scan` returns the scan ID, which lets the UI ignore late events from an
+  older scan.
+- Beyond the commands in DESIGN.md, `get_node_path` backs Copy path and
   `open_folder` opens a scanned directory. Files can only be revealed, never run.
 - `delete_item(nodeId, permanent)` returns `{ root, recycled, deleted }`, with
   separate byte totals for each mode in the current snapshot.
@@ -84,26 +86,28 @@ Deleting updates the map, panels and navigation without rescanning. Detached nod
 IDs stay stable in memory; saved trees omit deleted subtrees. The updated snapshot
 keeps its scan date and previous comparison, and records recycled and permanently
 deleted bytes separately. Recycling allows restoration; permanent deletion frees
-space immediately and can't be undone. Partial failures leave the snapshot unchanged
-and ask you to rescan. The real shell test for both modes is ignored by default
-because it deletes temporary files and changes the Windows Recycle Bin.
+space immediately and can't be undone. A partial failure leaves the snapshot
+unchanged and asks you to rescan. The test that calls the real Windows shell for
+both modes is `#[ignore]`d, because it deletes temporary files and puts items in
+the Recycle Bin.
 
 The tree is a snapshot: files can change or disappear after scanning. Rescan to
-refresh it. Aggregates have no filesystem path, so cannot be opened or revealed.
+refresh it. Aggregates have no filesystem path, so you can't open or reveal them.
 Zero-byte items remain available in Contents but occupy no treemap area.
 
-Completed scans are saved automatically in the app's local data directory under
-`scans/`. Home can reopen the last scan of a drive or a recent folder without
-rescanning. The latest and one previous snapshot per path are kept, up to ten
-paths; previous snapshots use the same format under `scans/previous/`. **Clear saved scans**
-removes this cache. Saved results show their date and warn after seven days or a
-significant change in drive free space. **Rescan** refreshes the snapshot.
+Sprawl saves every completed scan under `scans/` in the app's local data
+directory. Home can reopen the last scan of a drive or a recent folder without
+rescanning. Each path keeps its latest snapshot plus one previous snapshot, for
+up to ten paths. Previous snapshots use the same format under `scans/previous/`.
+**Clear saved scans** removes this cache. Saved results show their date, and warn
+once they are seven days old or drive free space has moved by at least 1 GiB or
+1% of capacity. **Rescan** refreshes the snapshot.
 
-Results compare with the previous scan of the same path when available: folder
-totals and Contents show size changes, new items, and removed direct children.
+When an earlier scan of the same path exists, results compare against it. Folder
+totals and Contents show size changes, new items and removed direct children.
 Switch **Largest files** to **Grown since** for the 50 files with the most growth.
 `get_changes(nodeId)` computes the comparison lazily and caches it for the current
-tree, independently of the map and other panels.
+tree, separately from the map and other panels.
 
 At a drive root, **Not found by scan** explains used space beyond the scanned
 files when the gap reaches the larger of 1 GiB and 1% of capacity. Saved scans use

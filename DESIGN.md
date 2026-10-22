@@ -1,13 +1,13 @@
-# Sprawl — Design
+# Sprawl design
 
-Sprawl shows where disk space goes. You pick a drive or folder, it scans, and you see what's using the space at a glance. The main view is a treemap, with a sorted list beside it for exact numbers.
+Sprawl shows where disk space goes. You pick a drive or folder, it scans, and the biggest folders and files show up as the biggest blocks. The main view is a treemap, with a sorted list beside it for exact numbers.
 
 ## Goals
 
 - Answer "what is filling my drive?" within seconds of a scan finishing.
 - Make sizes easy to compare: the area of a rectangle matches the bytes it uses, and the list gives exact numbers and percentages.
 - Stay responsive on a full system drive (1M+ files).
-- Read-only except for deleting selected items after in-app confirmation. Users choose the Windows Recycle Bin or permanent deletion, which requires a second in-app confirmation. Windows must ask before permanently deleting anything that cannot be recycled in Recycle Bin mode.
+- Read-only, except for deleting items the user picks and confirms. The user chooses the Windows Recycle Bin or permanent deletion, and permanent deletion needs a second confirmation. In Recycle Bin mode, Windows must ask before permanently deleting anything it can't recycle.
 
 ## Stack
 
@@ -22,7 +22,7 @@ Sprawl shows where disk space goes. You pick a drive or folder, it scans, and yo
 - Walks the tree in parallel and does not follow symlinks or junctions (reparse points), so there are no loops and nothing is counted twice.
 - When the app runs as administrator, scanning a whole NTFS drive reads the master file table directly, which is several times faster. Folder scans, other filesystems, and any MFT read failure use the directory walk.
 - Drive rescans load the latest saved tree and replay the existing NTFS USN journal, fetching changed MFT records and resident attribute-list extensions before using the same tree builder. Full MFT scans capture the journal checkpoint before reading; replay is idempotent. Missing or reset/truncated history, unsupported USN versions, more than 200,000 changed records, non-resident attribute lists, unknown reachable directories without a create event, incomplete prior scans, and any read or parsing uncertainty fall back to a full MFT scan, then the directory walk. The journal is never created or modified.
-- Files that can't be read (access denied and similar) are skipped and counted in `errors`. They never cause the scan to fail.
+- The scanner skips files it can't read (access denied and similar) and counts them in `errors`. They never fail the scan.
 - Each node stores its logical size (`len`), file count, and folder count. Folder totals are rolled up after the walk.
 - Progress goes out as a `scan-progress` event about every 100 ms: `{ files, folders, bytes, errors, currentPath }`. When the scan ends, a `scan-complete` event carries the root summary, or `scan-cancelled` if it was stopped.
 - The scan can be cancelled through a shared atomic flag. Only one scan runs at a time, and starting a new one replaces the previous result.
@@ -38,8 +38,8 @@ Sprawl shows where disk space goes. You pick a drive or folder, it scans, and yo
 | `list_saved_scans()` | Saved scan metadata, newest first |
 | `load_saved_scan(path, scannedAt)` | Opens a saved tree and returns its root, skipped count, and metadata |
 | `clear_saved_scans()` | Removes all saved scans |
-| `start_scan(path)` | starts a background scan, returns immediately |
-| `cancel_scan()` | — |
+| `start_scan(path)` | Starts a background scan and returns its scan ID right away |
+| `cancel_scan()` | Nothing |
 | `get_tree(nodeId?, depth, maxChildren)` | Subtree rooted at the node (the root if omitted), trimmed to `depth` levels. Each folder includes at most `maxChildren` children, and anything beyond that is merged into one synthetic `"N smaller items"` entry, so treemap totals still add up. |
 | `get_nodes(ids)` | Shallow node views in request order, with `null` for invalid or detached IDs |
 | `delete_item(nodeId, permanent)` | `{ root, recycled, deleted }`: updated shallow root and separate byte totals for Recycle Bin and permanent deletion for this snapshot |
@@ -53,7 +53,7 @@ The IPC node shape is `{ id, name, kind: "dir" | "file" | "other", size, files, 
 Both delete modes use `SHFileOperationW` with `FO_DELETE`, with COM initialized apartment-threaded on the blocking thread. Recycling uses `FOF_ALLOWUNDO | FOF_NOCONFIRMATION | FOF_WANTNUKEWARNING | FOF_NOERRORUI`; permanent deletion uses only `FOF_NOCONFIRMATION | FOF_NOERRORUI`, without undo or a Windows nuke warning. Absolute, double-NUL terminated paths have no extended prefix; paths of 260 UTF-16 units or more are refused. Synthetic IDs, scan roots, detached nodes, changed kinds, symlinks and junctions are refused. Link checks also cover ancestors and reuse the scanner classification, allowing cloud placeholders and dedup reparse points. Drive roots, SystemRoot, ProgramFiles, ProgramFiles(x86), ProgramData, USERPROFILE, its parent and their ancestors are protected; their contents are allowed. A missing path after the operation counts as success even after an error or abort. Cancellation leaves the tree unchanged. Partial folder deletion reports an error and requires a rescan.
 
 ### File categories
-Files are grouped by extension into Video, Images, Audio, Documents, Archives, Code, Apps & system (exe/dll/sys/msi…), and Other. The mapping lives in one place, and the frontend uses the same category list for colors.
+Files are grouped by extension into Video, Images, Audio, Documents, Archives, Code, Apps & system (exe/dll/sys/msi…), and Other. The mapping lives in `src/categories.json`. The backend embeds it and the frontend imports it, so both sides share the same IDs and colors.
 
 ### Saved scans
 - Completed scans are saved in the app's local data directory under `scans/`, using streaming bincode + zstd and a JSON metadata sidecar written last. Cancelled and failed scans are never saved.
@@ -66,7 +66,7 @@ Files are grouped by extension into Video, Images, Audio, Documents, Archives, C
 
 ## UI
 
-A calm, clean, dark-first look that also respects the system light theme. There is one accent color, and the category colors do the visual work. Labels are short, numbers are tabular, and sizes are formatted in binary units shown as KB/MB/GB/TB.
+Dark by default, with a light palette when the system theme is light. There is one accent color; everything else that has color is a file category. Labels are short, numbers are tabular, and sizes are formatted in binary units shown as KB/MB/GB/TB.
 
 ### 1. Home
 - Each drive gets a card with its letter and label, a used/free bar, the text "412 GB used of 1 TB", and a **Scan** button.
@@ -75,7 +75,7 @@ A calm, clean, dark-first look that also respects the system light theme. There 
 - On Windows, an admin row offers **Restart as administrator** (UAC relaunch) when not elevated. **Always run as administrator** lives in the header's settings (cog) menu. The preference lives in `settings.json` in the app's local data directory; when set, startup relaunches elevated and continues unelevated if UAC is declined.
 
 ### 2. Scanning
-- While scanning, the screen shows big live counters for files found and size found, a thin current-path line that is truncated in the middle, an indeterminate progress bar (the total isn't known ahead of time), and a **Cancel** button.
+- While scanning, the screen shows large live counters for files found and size found, a thin current-path line that is truncated in the middle, an indeterminate progress bar (the total isn't known ahead of time), and a **Cancel** button.
 
 ### 3. Results (main screen)
 ```
@@ -103,7 +103,7 @@ A calm, clean, dark-first look that also respects the system light theme. There 
 - **Not found by scan:** at the root of a drive scan, compare used space (`total - free`) with scanned logical bytes plus recycled and permanently deleted bytes for this snapshot, preferring snapshot drive totals/free space for saved results. Show a header value and non-interactive Contents row only when the gap is at least the larger of 1 GiB and 1% of total capacity. Recycled bytes appear beside the scanned size with a tooltip explaining when space is freed. Its neutral hatched meter shows its share of used space. The explanation includes skipped items when present, system files and file-system overhead, and an administrator hint when unelevated. Negative gaps (for example hard links counted by name or compressed files at logical size) are hidden.
 - **Type breakdown bar:** a stacked bar plus a legend for the current folder. It also explains the treemap's colors. Hovering a category dims every other category in the treemap.
 - **Keyboard:** Backspace/Alt+← goes back, Alt+↑ goes up, Delete opens the delete dialog on an item row, and Esc clears the hover.
-- **Empty and error states:** an empty folder, a scan with skipped items ("312 items couldn't be read — run as administrator to include them"), and no drives found.
+- **Empty and error states:** an empty folder, a scan with skipped items ("312 items couldn't be read. Run as administrator to include them."), and no drives found.
 
 ## Testing
 - Rust: unit tests run the scanner against a temp directory tree to check size rollup, counts, sorting, and `get_tree` trimming and aggregation. They also check that a symlink or junction isn't followed where one can be created.
