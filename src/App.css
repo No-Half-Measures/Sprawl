@@ -27,10 +27,7 @@ strong { font-weight: 600; }
 .app { min-height: 100vh; }
 .app-header { height: 48px; display: flex; align-items: center; padding: 0 22px; border-bottom: 1px solid var(--line); gap: 25px; }
 .brand { display: flex; align-items: center; gap: 10px; font-weight: 650; font-size: 16px; letter-spacing: -.025em; }
-.brand-mark { display: grid; grid-template-columns: 12px 8px; grid-template-rows: 9px 9px; gap: 2px; width: 22px; }
-.brand-mark i { background: var(--accent); border-radius: 1px; }
-.brand-mark i:first-child { grid-row: span 2; }
-.brand-mark i:last-child { opacity: .45; }
+.brand-mark { display: block; width: 28px; height: 28px; flex-shrink: 0; }
 .header-note { color: var(--muted); font-size: 13px; }
 .header-actions { margin-left: auto; display: flex; gap: 8px; }
 .header-actions button { padding: 6px 12px; }

@@ -487,11 +487,7 @@ export default function App() {
     <main className={`app ${phase}`}>
       <header className="app-header">
         <div className="brand">
-          <span className="brand-mark" aria-hidden="true">
-            <i />
-            <i />
-            <i />
-          </span>
+          <img className="brand-mark" src="/sprawl.svg" alt="" />
           Sprawl
         </div>
         <span className="header-note">A little perspective on your space.</span>
