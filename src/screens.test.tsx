@@ -362,7 +362,7 @@ describe('administrator controls', () => {
   it('offers restart when not elevated and leaves preferences out of Home', () => {
     const screen = HomeScreen({ ...props, admin });
     const html = renderToStaticMarkup(screen);
-    expect(html).toContain('Drive scans are much faster when DiskMapper runs as administrator.');
+    expect(html).toContain('Drive scans are much faster when Sprawl runs as administrator.');
     expect(html).toContain('Restart as administrator');
     expect(html).not.toContain('Always run as administrator');
     expect(html).not.toContain('Explorer');
@@ -454,7 +454,7 @@ describe('settings menu', () => {
     expect(menu.html()).toContain('aria-expanded="true"');
     expect(menu.html()).toContain('<h2>Settings</h2>');
     expect(menu.html()).toContain('Always run as administrator');
-    expect(menu.html()).toContain('Add &quot;Scan with DiskMapper&quot; to Explorer&#x27;s right-click menu');
+    expect(menu.html()).toContain('Add &quot;Scan with Sprawl&quot; to Explorer&#x27;s right-click menu');
     expect(menu.controls().filter(c => c.type === 'input')).toHaveLength(2);
     menu.controls()[0].props.onClick!();
     menu.render();

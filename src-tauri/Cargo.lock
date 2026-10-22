@@ -792,25 +792,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "diskmapper"
-version = "0.1.0"
-dependencies = [
- "bincode",
- "rayon",
- "serde",
- "serde_json",
- "sysinfo",
- "tauri",
- "tauri-build",
- "tauri-plugin-dialog",
- "tauri-plugin-opener",
- "tauri-plugin-single-instance",
- "tempfile",
- "windows-sys 0.61.2",
- "zstd",
-]
-
-[[package]]
 name = "dispatch2"
 version = "0.3.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3336,6 +3317,25 @@ dependencies = [
  "gobject-sys",
  "libc",
  "system-deps",
+]
+
+[[package]]
+name = "sprawl"
+version = "0.1.0"
+dependencies = [
+ "bincode",
+ "rayon",
+ "serde",
+ "serde_json",
+ "sysinfo",
+ "tauri",
+ "tauri-build",
+ "tauri-plugin-dialog",
+ "tauri-plugin-opener",
+ "tauri-plugin-single-instance",
+ "tempfile",
+ "windows-sys 0.61.2",
+ "zstd",
 ]
 
 [[package]]

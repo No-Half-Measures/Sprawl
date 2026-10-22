@@ -699,7 +699,7 @@ mod tests {
     #[ignore = "Scans a whole drive then replays its journal; run elevated with --nocapture"]
     fn incremental_matches_full_scan() {
         let root_path = PathBuf::from(
-            std::env::var_os("DISKMAPPER_MFT_DRIVE").unwrap_or_else(|| r"C:\".into()),
+            std::env::var_os("SPRAWL_MFT_DRIVE").unwrap_or_else(|| r"C:\".into()),
         );
         let cancel = AtomicBool::new(false);
         let start = Instant::now();
@@ -746,12 +746,12 @@ mod tests {
     #[ignore = "Scans a whole drive twice; run elevated with --nocapture"]
     fn mft_matches_directory_scan() {
         let path = PathBuf::from(
-            std::env::var_os("DISKMAPPER_MFT_DRIVE").unwrap_or_else(|| r"C:\".into()),
+            std::env::var_os("SPRAWL_MFT_DRIVE").unwrap_or_else(|| r"C:\".into()),
         );
         let root_path = strip_verbatim_prefix(&fs::canonicalize(&path).unwrap());
         assert!(
             drive_letter(&root_path).is_some(),
-            "DISKMAPPER_MFT_DRIVE must be a local drive root"
+            "SPRAWL_MFT_DRIVE must be a local drive root"
         );
         let cancel = AtomicBool::new(false);
         let start = Instant::now();

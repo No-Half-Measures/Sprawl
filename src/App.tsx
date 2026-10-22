@@ -492,7 +492,7 @@ export default function App() {
             <i />
             <i />
           </span>
-          DiskMapper
+          Sprawl
         </div>
         <span className="header-note">A little perspective on your space.</span>
         <div className="header-actions">

@@ -846,7 +846,7 @@ pub fn run() {
         ])
         .run(tauri::generate_context!());
     if let Err(error) = result {
-        eprintln!("Could not run DiskMapper: {error}");
+        eprintln!("Could not run Sprawl: {error}");
     }
 }
 

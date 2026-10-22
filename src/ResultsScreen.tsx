@@ -99,7 +99,7 @@ export default function ResultsScreen({
   const [fileTab, setFileTab] = useState<'largest' | 'grown'>('largest');
   const [split, setSplit] = useState(() => {
     try {
-      const saved = localStorage.getItem('diskmapper.split');
+      const saved = localStorage.getItem('sprawl.split');
       const value = saved?.trim() ? Number(saved) : NaN;
       return Number.isFinite(value) ? Math.max(20, Math.min(80, value)) : 48;
     } catch { return 48; }
@@ -109,7 +109,7 @@ export default function ResultsScreen({
     const next = Math.max(20, Math.min(80, value));
     setSplit(next);
     if (persist) {
-      try { localStorage.setItem('diskmapper.split', String(next)); } catch {}
+      try { localStorage.setItem('sprawl.split', String(next)); } catch {}
     }
   };
   const visibleBreakdown = breakdown.filter(b => b.bytes > 0);

@@ -1425,7 +1425,7 @@ fn links_are_not_followed() {
 #[ignore = "manual real-directory smoke scan"]
 fn smoke_real_directory() {
     let path =
-        std::env::var("DISKMAPPER_SMOKE_PATH").unwrap_or_else(|_| r"C:\Windows\System32".into());
+        std::env::var("SPRAWL_SMOKE_PATH").unwrap_or_else(|_| r"C:\Windows\System32".into());
     let start = Instant::now();
     let tree = scanner::scan(Path::new(&path), None, &AtomicBool::new(false), |_| {})
         .unwrap()

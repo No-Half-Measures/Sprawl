@@ -106,7 +106,7 @@ pub fn relaunch() -> Result<(), String> {
     };
 
     let exe = std::env::current_exe()
-        .map_err(|e| format!("Could not locate the DiskMapper executable: {e}"))?;
+        .map_err(|e| format!("Could not locate the Sprawl executable: {e}"))?;
     let dir = std::env::current_dir()
         .map_err(|e| format!("Could not read the working directory: {e}"))?;
     let exe: Vec<_> = exe.as_os_str().encode_wide().chain(Some(0)).collect();
@@ -163,7 +163,7 @@ pub fn wait_for_parent() -> Result<(), String> {
             Ok(())
         } else {
             Err(format!(
-                "Could not wait for the previous DiskMapper instance: {error}"
+                "Could not wait for the previous Sprawl instance: {error}"
             ))
         };
     }
@@ -172,6 +172,6 @@ pub fn wait_for_parent() -> Result<(), String> {
     if result == WAIT_OBJECT_0 {
         Ok(())
     } else {
-        Err("The previous DiskMapper instance did not exit.".into())
+        Err("The previous Sprawl instance did not exit.".into())
     }
 }

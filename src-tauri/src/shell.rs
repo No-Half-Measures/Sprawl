@@ -55,12 +55,12 @@ mod windows {
     };
 
     const KEYS: [(&str, bool); 3] = [
-        (r"Software\Classes\Directory\shell\DiskMapper", false),
+        (r"Software\Classes\Directory\shell\Sprawl", false),
         (
-            r"Software\Classes\Directory\Background\shell\DiskMapper",
+            r"Software\Classes\Directory\Background\shell\Sprawl",
             true,
         ),
-        (r"Software\Classes\Drive\shell\DiskMapper", false),
+        (r"Software\Classes\Drive\shell\Sprawl", false),
     ];
 
     struct Key(HKEY);
@@ -174,11 +174,11 @@ mod windows {
         let result = (|| {
             if enabled {
                 let exe = std::env::current_exe()
-                    .map_err(|e| format!("Could not locate the DiskMapper executable: {e}"))?;
+                    .map_err(|e| format!("Could not locate the Sprawl executable: {e}"))?;
                 let exe = exe.to_string_lossy();
                 for (path, background) in KEYS {
                     let key = create(path)?;
-                    write(&key, "", "Scan with DiskMapper")?;
+                    write(&key, "", "Scan with Sprawl")?;
                     write(&key, "Icon", &format!("\"{exe}\",0"))?;
                     write(
                         &create(&format!(r"{path}\command"))?,
@@ -260,14 +260,14 @@ mod tests {
 
     #[test]
     fn quotes_executable_and_explorer_targets() {
-        let exe = r"C:\Program Files\DiskMapper\DiskMapper.exe";
+        let exe = r"C:\Program Files\Sprawl\Sprawl.exe";
         assert_eq!(
             command(exe, false),
-            r#""C:\Program Files\DiskMapper\DiskMapper.exe" "%1""#
+            r#""C:\Program Files\Sprawl\Sprawl.exe" "%1""#
         );
         assert_eq!(
             command(exe, true),
-            r#""C:\Program Files\DiskMapper\DiskMapper.exe" "%V""#
+            r#""C:\Program Files\Sprawl\Sprawl.exe" "%V""#
         );
     }
 }

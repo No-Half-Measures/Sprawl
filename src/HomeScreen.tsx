@@ -53,7 +53,7 @@ export default function HomeScreen({
           <div className="admin-row">
             <span>{admin.elevated
               ? 'Running as administrator · drive scans use the fast path.'
-              : 'Drive scans are much faster when DiskMapper runs as administrator.'}</span>
+              : 'Drive scans are much faster when Sprawl runs as administrator.'}</span>
             {!admin.elevated && (
               <button disabled={disabled} onClick={() => void restartAsAdmin()}>Restart as administrator</button>
             )}

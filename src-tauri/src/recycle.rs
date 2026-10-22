@@ -2,7 +2,7 @@ use crate::scanner::{self, Kind};
 use std::{fs, path::Path};
 
 const CHANGED: &str = "This item has changed. Rescan to refresh it.";
-const PROTECTED: &str = "Windows needs this folder, so DiskMapper won't delete it.";
+const PROTECTED: &str = "Windows needs this folder, so Sprawl won't delete it.";
 
 fn normalized(path: &str) -> String {
     let path = path.replace('/', "\\").to_lowercase();
@@ -332,9 +332,9 @@ mod tests {
     fn real_delete_modes() {
         for permanent in [false, true] {
             let dir = tempfile::tempdir().unwrap();
-            let path = dir.path().join("DiskMapper recycle test.txt");
+            let path = dir.path().join("Sprawl recycle test.txt");
             fs::write(&path, "recycle test").unwrap();
-            delete_item(&path, "DiskMapper recycle test.txt", 0, permanent).unwrap();
+            delete_item(&path, "Sprawl recycle test.txt", 0, permanent).unwrap();
             assert!(!path.exists());
         }
     }

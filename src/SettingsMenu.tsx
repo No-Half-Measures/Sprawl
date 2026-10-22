@@ -49,7 +49,7 @@ export default function SettingsMenu({ admin, busy, setAlwaysElevate, setContext
           </label>
           <label>
             <input type="checkbox" checked={admin.contextMenuEnabled} disabled={busy} onChange={e => void setContextMenu(e.target.checked)} />
-            Add "Scan with DiskMapper" to Explorer's right-click menu
+            Add "Scan with Sprawl" to Explorer's right-click menu
           </label>
         </div>
       )}

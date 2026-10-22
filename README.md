@@ -1,4 +1,4 @@
-# DiskMapper
+# Sprawl
 
 A Windows disk-space visualizer built with Tauri 2, Rust and React.
 Choose a drive or folder, then explore its largest contents in a canvas treemap.
@@ -15,9 +15,9 @@ Dependencies are already installed. Start the desktop app with `npm run tauri de
 A standalone browser preview cannot scan: disk access is provided by the Tauri backend.
 
 The header's settings (cog) menu offers **Always run as administrator** and can
-add **Scan with DiskMapper** to Explorer's right-click menu for folders,
+add **Scan with Sprawl** to Explorer's right-click menu for folders,
 folder backgrounds and drives (under **Show more options** on Windows 11).
-It scans the chosen path in the existing window, or opens DiskMapper if needed.
+It scans the chosen path in the existing window, or opens Sprawl if needed.
 
 ## Checks
 
@@ -32,12 +32,12 @@ cargo fmt --check
 cargo test smoke_real_directory -- --ignored --nocapture
 ```
 
-The manual smoke test scans `C:\Windows\System32`; set `DISKMAPPER_SMOKE_PATH`
+The manual smoke test scans `C:\Windows\System32`; set `SPRAWL_SMOKE_PATH`
 to use another existing directory. Tests create temporary fixtures. The link test
 tries a symlink, then a Windows junction, and reports a skip if neither is allowed.
 
 `cargo test --release mft_matches_directory_scan -- --ignored --nocapture`, run
-from an elevated terminal, scans `C:\` (or `DISKMAPPER_MFT_DRIVE`) through both
+from an elevated terminal, scans `C:\` (or `SPRAWL_MFT_DRIVE`) through both
 the MFT and the directory walk and prints timings and differences.
 
 ## Implementation notes
