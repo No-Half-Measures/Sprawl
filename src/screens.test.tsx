@@ -101,7 +101,7 @@ describe('screen details', () => {
     expect(html).toContain('<span>1 file</span>');
     expect(html).toContain('<span>1 folder</span>');
     expect(html).toContain('<span>1 removed item</span>');
-    expect(html).toContain('1 item couldn’t be read');
+    expect(html).toContain('1 item couldn&#x27;t be read');
     expect(html).toContain('Includes 1 item that couldn&#x27;t be read');
   });
   it('keeps recycled bytes out of Not found and shows them only at the drive root', () => {

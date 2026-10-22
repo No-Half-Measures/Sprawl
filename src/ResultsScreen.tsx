@@ -196,7 +196,7 @@ export default function ResultsScreen({
           className="skipped"
           role="status"
         >
-          {count(skipped, 'item')} couldn’t be read — run as administrator to include them.
+          {count(skipped, 'item')} couldn't be read. Run as administrator to include them.
         </div>
       )}
       <div
