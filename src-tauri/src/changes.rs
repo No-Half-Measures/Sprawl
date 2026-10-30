@@ -90,6 +90,10 @@ impl Comparison {
         result
     }
 
+    pub fn previous_size(&self, id: usize) -> Option<u64> {
+        self.previous.get(id).copied().flatten()
+    }
+
     pub fn view(&self, tree: &Tree, id: usize) -> Result<Changes, String> {
         let node = tree.node(id)?;
         let base = tree.path(id)?;

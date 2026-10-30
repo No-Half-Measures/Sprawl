@@ -171,6 +171,26 @@ If Sprawl is already open, the scan runs in that window.
 its latest and previous scan, for up to ten paths. **Clear saved scans** removes
 them all.
 
+## Command line and AI agents
+
+`sprawl-cli` prints JSON reports, so scripts and AI coding agents can ask what
+is filling a disk without opening the app. Build it with
+`cargo build --release --bin sprawl-cli` in `src-tauri`.
+
+```text
+sprawl-cli scan C:\                     # scan, save, and report
+sprawl-cli show C:\Users\me\AppData     # report from the newest saved scan
+sprawl-cli list                         # list saved scans
+```
+
+A report covers the path's size, its largest children (`--depth` levels deep,
+`--limit` per folder), its largest files, a type breakdown, and changes since
+the previous scan. It also includes the scan's age, so an agent can tell when
+to rescan. `show` works for any folder inside a saved scan, so one drive scan
+answers questions about every folder on it. The CLI shares saved scans with
+the app and never deletes files. Run it elevated to scan whole drives from the
+master file table.
+
 ## Limitations
 
 - Windows only.

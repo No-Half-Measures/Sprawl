@@ -3324,6 +3324,7 @@ name = "sprawl"
 version = "0.1.0"
 dependencies = [
  "bincode",
+ "dirs",
  "rayon",
  "serde",
  "serde_json",

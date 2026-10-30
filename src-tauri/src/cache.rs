@@ -68,6 +68,21 @@ fn remove(dir: &Path, key: &str) {
     }
 }
 
+/// Serializes cache access across processes, so the app and the CLI can share it.
+pub fn lock(dir: &Path) -> io::Result<File> {
+    let path = dir.with_extension("lock");
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent)?;
+    }
+    let file = File::options()
+        .create(true)
+        .truncate(false)
+        .write(true)
+        .open(path)?;
+    file.lock()?;
+    Ok(file)
+}
+
 pub fn list(dir: &Path) -> io::Result<Vec<SavedScan>> {
     let entries = match fs::read_dir(dir) {
         Ok(entries) => entries,

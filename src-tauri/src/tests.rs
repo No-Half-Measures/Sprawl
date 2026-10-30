@@ -1450,3 +1450,59 @@ fn smoke_real_directory() {
         root.size
     );
 }
+
+#[test]
+fn cli_reads_the_app_scan_folder() {
+    let config: serde_json::Value =
+        serde_json::from_str(include_str!("../tauri.conf.json")).unwrap();
+    assert_eq!(config["identifier"], crate::cli::IDENTIFIER);
+}
+
+#[test]
+fn cache_lock_excludes_other_handles() {
+    let dir = tempfile::tempdir().unwrap();
+    let scans = dir.path().join("scans");
+    let held = cache::lock(&scans).unwrap();
+    let other = fs::File::options()
+        .write(true)
+        .open(scans.with_extension("lock"))
+        .unwrap();
+    assert!(other.try_lock().is_err());
+    drop(held);
+    assert!(other.try_lock().is_ok());
+}
+
+#[test]
+fn cli_shows_saved_subfolders_with_changes() {
+    let (root, tree) = fixture();
+    let dir = tempfile::tempdir().unwrap();
+    cache::save(dir.path(), &tree, &saved(&tree, 1)).unwrap();
+    fs::write(root.path().join("nested/code.rs"), [0; 100]).unwrap();
+    fs::write(root.path().join("nested/new.txt"), [0; 5]).unwrap();
+    let tree = scanner::scan(root.path(), None, &AtomicBool::new(false), |_| {})
+        .unwrap()
+        .unwrap();
+    cache::save(dir.path(), &tree, &saved(&tree, 2)).unwrap();
+
+    let nested = root.path().join("NESTED");
+    let report = crate::cli::show(dir.path(), &nested, 1, 20).unwrap();
+    assert_eq!(report.kind, Kind::Dir);
+    assert_eq!(report.size, 105);
+    assert_eq!(report.scan.scanned_at, 2);
+    assert_eq!(report.unaccounted, None);
+    let names: Vec<_> = report.children.iter().map(|c| c.name.as_str()).collect();
+    assert_eq!(names, ["code.rs", "new.txt"]);
+    assert_eq!(report.children[0].size_change, Some(60));
+    assert!(report.children[1].new);
+    assert!(Path::new(&report.largest_files[0].path).ends_with("nested/code.rs"));
+    let changes = report.changes.unwrap();
+    assert_eq!(changes.since, 1);
+    assert_eq!(changes.size_change, Some(65));
+    assert_eq!(changes.grown_files.len(), 2);
+
+    let missing = crate::cli::show(dir.path(), &root.path().join("nested/gone"), 1, 20);
+    assert!(missing.err().unwrap().contains("isn't in the saved scan"));
+    let elsewhere = tempfile::tempdir().unwrap();
+    let uncovered = crate::cli::show(dir.path(), elsewhere.path(), 1, 20);
+    assert!(uncovered.err().unwrap().contains("no saved scan contains"));
+}

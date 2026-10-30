@@ -1,6 +1,7 @@
 mod admin;
 mod cache;
 mod changes;
+pub mod cli;
 mod mft;
 mod recycle;
 mod scanner;
@@ -10,7 +11,7 @@ use cache::SavedScan;
 use scanner::{Kind, Tree};
 use serde::Serialize;
 use std::{
-    path::PathBuf,
+    path::{Path, PathBuf},
     sync::{
         Arc, Mutex, OnceLock,
         atomic::{AtomicBool, Ordering},
@@ -57,7 +58,6 @@ impl Session {
 struct AppState {
     session: Mutex<Session>,
     worker: Mutex<()>,
-    cache: Mutex<()>,
     deletes: Mutex<()>,
     admin_declined: AtomicBool,
     launch_path: Mutex<Option<String>>,
@@ -139,6 +139,10 @@ fn scans_dir(app: &tauri::AppHandle) -> Result<PathBuf, String> {
         .map_err(|e| e.to_string())
 }
 
+fn lock_cache(dir: &Path) -> Result<std::fs::File, String> {
+    cache::lock(dir).map_err(|e| format!("Saved scans are unavailable: {e}"))
+}
+
 fn settings_path(app: &tauri::AppHandle) -> Result<PathBuf, String> {
     app.path()
         .app_local_data_dir()
@@ -204,11 +208,7 @@ fn restart_as_admin(app: tauri::AppHandle) -> Result<(), String> {
 async fn list_saved_scans(app: tauri::AppHandle) -> Result<Vec<SavedScan>, String> {
     let dir = scans_dir(&app)?;
     tauri::async_runtime::spawn_blocking(move || {
-        let state = app.state::<AppState>();
-        let _cache = state
-            .cache
-            .lock()
-            .map_err(|_| "Saved scans are unavailable".to_string())?;
+        let _cache = lock_cache(&dir)?;
         cache::list(&dir).map_err(|e| e.to_string())
     })
     .await
@@ -243,10 +243,7 @@ async fn load_saved_scan(
     tauri::async_runtime::spawn_blocking(move || {
         let state = app.state::<AppState>();
         let (tree, saved) = {
-            let _cache = state
-                .cache
-                .lock()
-                .map_err(|_| "Saved scans are unavailable".to_string())?;
+            let _cache = lock_cache(&dir)?;
             cache::load(&dir, &path)?
         };
         let loaded = LoadedScan {
@@ -279,10 +276,7 @@ async fn clear_saved_scans(app: tauri::AppHandle) -> Result<(), String> {
     let dir = scans_dir(&app)?;
     tauri::async_runtime::spawn_blocking(move || {
         let state = app.state::<AppState>();
-        let _cache = state
-            .cache
-            .lock()
-            .map_err(|_| "Saved scans are unavailable".to_string())?;
+        let _cache = lock_cache(&dir)?;
         cache::clear(&dir).map_err(|e| e.to_string())?;
         state
             .session
@@ -378,7 +372,7 @@ fn start_scan(
             {
                 scanner::drive_letter(&scanner::strip_verbatim_prefix(&path)).and_then(|_| {
                     let dir = scans_dir(&app).ok()?;
-                    let _cache = state.cache.lock().ok()?;
+                    let _cache = cache::lock(&dir).ok()?;
                     cache::load(&dir, &path.to_string_lossy())
                         .ok()
                         .map(|(tree, _)| tree)
@@ -449,11 +443,7 @@ fn start_scan(
                     std::thread::spawn(move || {
                         let result = (|| {
                             let dir = scans_dir(&app)?;
-                            let state = app.state::<AppState>();
-                            let _cache = state
-                                .cache
-                                .lock()
-                                .map_err(|_| "Saved scans are unavailable".to_string())?;
+                            let _cache = lock_cache(&dir)?;
                             cache::save(&dir, &tree, &meta).map_err(|e| e.to_string())
                         })();
                         match result {
@@ -617,11 +607,7 @@ async fn delete_item(
         std::thread::spawn(move || {
             let result = (|| {
                 let dir = scans_dir(&app)?;
-                let state = app.state::<AppState>();
-                let _cache = state
-                    .cache
-                    .lock()
-                    .map_err(|_| "Saved scans are unavailable".to_string())?;
+                let _cache = lock_cache(&dir)?;
                 cache::save(&dir, &updated, &meta).map_err(|e| e.to_string())
             })();
             match result {
@@ -719,11 +705,7 @@ async fn get_changes(
         let comparison = panels.changes.get_or_init(|| {
             let Some(saved) = saved else { return Ok(None) };
             let baseline = {
-                let state = app.state::<AppState>();
-                let _cache = state
-                    .cache
-                    .lock()
-                    .map_err(|_| "Saved scans are unavailable".to_string())?;
+                let _cache = lock_cache(&dir)?;
                 cache::baseline(&dir, &saved)?
             };
             Ok(baseline.map(|(previous, meta)| {
