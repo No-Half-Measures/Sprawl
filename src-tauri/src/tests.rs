@@ -1506,3 +1506,11 @@ fn cli_shows_saved_subfolders_with_changes() {
     let uncovered = crate::cli::show(dir.path(), elsewhere.path(), 1, 20);
     assert!(uncovered.err().unwrap().contains("no saved scan contains"));
 }
+
+#[test]
+fn cli_prints_its_version() {
+    assert_eq!(
+        crate::cli::execute(vec!["--version".into()]).unwrap(),
+        concat!("sprawl-cli ", env!("CARGO_PKG_VERSION"))
+    );
+}

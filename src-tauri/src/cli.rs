@@ -27,6 +27,8 @@ Usage:
       Print a report for <path> from the newest saved scan that contains it.
   sprawl-cli list
       List saved scans.
+  sprawl-cli --version
+      Print the version.
 
 Options:
   --depth N   Folder levels to list below <path> (default 1, max 8)
@@ -49,7 +51,7 @@ pub fn run() -> ExitCode {
     }
 }
 
-fn execute(args: Vec<OsString>) -> Result<String, String> {
+pub(crate) fn execute(args: Vec<OsString>) -> Result<String, String> {
     let mut args = args.into_iter();
     let Some(command) = args.next() else {
         return Ok(USAGE.into());
@@ -78,6 +80,9 @@ fn execute(args: Vec<OsString>) -> Result<String, String> {
     let dir = scans_dir()?;
     match (command.to_str(), path) {
         (Some("-h" | "--help" | "help"), _) => Ok(USAGE.into()),
+        (Some("-V" | "--version"), None) => {
+            Ok(concat!("sprawl-cli ", env!("CARGO_PKG_VERSION")).into())
+        }
         (Some("list"), None) => json(&list(&dir)?),
         (Some("scan"), Some(path)) => json(&scan(&dir, &path, depth, limit)?),
         (Some("show"), Some(path)) => json(&show(&dir, &path, depth, limit)?),
