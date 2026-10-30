@@ -34,6 +34,32 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf
       - run: npm ci
+      - name: Build CLI
+        shell: bash
+        working-directory: src-tauri
+        run: |
+          case "$RUNNER_OS" in
+            Windows)
+              cargo build --release --bin sprawl-cli
+              cp target/release/sprawl-cli.exe sprawl-cli-windows-x64.exe
+              ;;
+            Linux)
+              cargo build --release --bin sprawl-cli
+              tar -czf sprawl-cli-linux-x64.tar.gz -C target/release sprawl-cli
+              ;;
+            macOS)
+              for target in aarch64-apple-darwin x86_64-apple-darwin; do
+                cargo build --release --bin sprawl-cli --target "$target"
+              done
+              # The Tauri bundler expects every bin target in the universal dir.
+              mkdir -p target/universal-apple-darwin/release
+              lipo -create -output target/universal-apple-darwin/release/sprawl-cli \
+                target/aarch64-apple-darwin/release/sprawl-cli \
+                target/x86_64-apple-darwin/release/sprawl-cli
+              tar -czf sprawl-cli-macos-universal.tar.gz \
+                -C target/universal-apple-darwin/release sprawl-cli
+              ;;
+          esac
       - uses: tauri-apps/tauri-action@v0
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -43,35 +69,12 @@ jobs:
           releaseBody: See the assets below to download and install Sprawl.
           releaseDraft: true
           args: ${{ matrix.args }}
-      - name: Build and upload CLI
+      - name: Upload CLI
         shell: bash
         working-directory: src-tauri
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: |
-          case "$RUNNER_OS" in
-            Windows)
-              cargo build --release --bin sprawl-cli
-              asset=sprawl-cli-windows-x64.exe
-              cp target/release/sprawl-cli.exe "$asset"
-              ;;
-            Linux)
-              cargo build --release --bin sprawl-cli
-              asset=sprawl-cli-linux-x64.tar.gz
-              tar -czf "$asset" -C target/release sprawl-cli
-              ;;
-            macOS)
-              for target in aarch64-apple-darwin x86_64-apple-darwin; do
-                cargo build --release --bin sprawl-cli --target "$target"
-              done
-              lipo -create -output sprawl-cli \
-                target/aarch64-apple-darwin/release/sprawl-cli \
-                target/x86_64-apple-darwin/release/sprawl-cli
-              asset=sprawl-cli-macos-universal.tar.gz
-              tar -czf "$asset" sprawl-cli
-              ;;
-          esac
-          gh release upload "$GITHUB_REF_NAME" "$asset" --clobber
+        run: gh release upload "$GITHUB_REF_NAME" sprawl-cli-* --clobber
       - name: Upload agent skill
         if: runner.os == 'Linux'
         env:
