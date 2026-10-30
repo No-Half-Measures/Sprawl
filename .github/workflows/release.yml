@@ -72,3 +72,10 @@ jobs:
               ;;
           esac
           gh release upload "$GITHUB_REF_NAME" "$asset" --clobber
+      - name: Upload agent skill
+        if: runner.os == 'Linux'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          (cd skills && zip -r ../sprawl-skill.zip sprawl)
+          gh release upload "$GITHUB_REF_NAME" sprawl-skill.zip --clobber

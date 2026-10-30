@@ -192,6 +192,12 @@ answers questions about every folder on it. The CLI shares saved scans with
 the app and never deletes files. Run it elevated to scan whole drives from the
 master file table.
 
+[skills/sprawl](skills/sprawl/SKILL.md) is an agent skill that tells Claude
+Code, Codex and other agents when to use the CLI, how to read its reports and
+which files not to delete. Each release also attaches it as `sprawl-skill.zip`.
+Copy the `sprawl` folder into `~/.claude/skills/` for Claude Code or
+`~/.agents/skills/` for Codex.
+
 ## Limitations
 
 - Windows only.
