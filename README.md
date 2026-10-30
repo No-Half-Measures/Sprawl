@@ -174,8 +174,9 @@ them all.
 ## Command line and AI agents
 
 `sprawl-cli` prints JSON reports, so scripts and AI coding agents can ask what
-is filling a disk without opening the app. Build it with
-`cargo build --release --bin sprawl-cli` in `src-tauri`.
+is filling a disk without opening the app. Each GitHub release attaches it as
+a standalone download, such as `sprawl-cli-windows-x64.exe`. To build it
+yourself, run `cargo build --release --bin sprawl-cli` in `src-tauri`.
 
 ```text
 sprawl-cli scan C:\                     # scan, save, and report
