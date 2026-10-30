@@ -1,6 +1,6 @@
 [package]
 name = "sprawl"
-version = "0.1.0"
+version = "0.2.0"
 description = "A disk space visualizer"
 edition = "2024"
 default-run = "sprawl"
