@@ -15,6 +15,8 @@ Run `sprawl-cli --version`. If the command isn't found, download the binary for
 your platform from https://github.com/No-Half-Measures/Sprawl/releases/latest
 (`sprawl-cli-windows-x64.exe`, `sprawl-cli-linux-x64.tar.gz` or
 `sprawl-cli-macos-universal.tar.gz`) and ask the user before putting it on PATH.
+On Windows, `sprawl-cli-install.ps1` from the same release installs it and adds
+it to the user PATH. Ask the user before running it.
 
 ## Workflow
 

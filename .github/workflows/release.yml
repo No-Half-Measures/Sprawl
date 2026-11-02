@@ -42,6 +42,7 @@ jobs:
             Windows)
               cargo build --release --bin sprawl-cli
               cp target/release/sprawl-cli.exe sprawl-cli-windows-x64.exe
+              cp ../scripts/install-cli.ps1 sprawl-cli-install.ps1
               ;;
             Linux)
               cargo build --release --bin sprawl-cli
