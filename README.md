@@ -131,10 +131,14 @@ second command scans `C:\Windows\System32` by default. Set
 
 ## Getting started
 
-Sprawl is a Windows app. There are no prebuilt releases yet, so you'll need to
-build it from source.
+Sprawl is a Windows app. Download the `-setup.exe` installer from the
+[latest release](https://github.com/No-Half-Measures/Sprawl/releases/latest).
+It asks whether to install for everyone on the computer, which needs
+administrator rights and installs to Program Files, or only for you. Either
+way it puts `sprawl-cli` on PATH, the system PATH for everyone or your user
+PATH for you alone, and removes it again when you uninstall.
 
-You need:
+To build from source, you need:
 
 - [Node.js](https://nodejs.org) 20.19+ or 22.12+
 - stable [Rust](https://rustup.rs)
