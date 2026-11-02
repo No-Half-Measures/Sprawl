@@ -132,8 +132,8 @@ describe('shared file categories', () => {
     expect(categories.find(c => c.id === 'apps')?.label).toBe('Apps & games');
   });
 });
-const file = (id: number, size: number): TreeNode => ({ id, name: `file${id}`, kind: 'file', size, files: 1, folders: 0, category: 'other' });
-const root: TreeNode = { id: 0, name: 'root', kind: 'dir', size: 100, files: 3, folders: 0, children: [file(1, 60), file(2, 30), file(3, 10)] };
+const file = (id: number, size: number): TreeNode => ({ id, name: `file${id}`, kind: 'file', size, allocated: size, files: 1, folders: 0, category: 'other' });
+const root: TreeNode = { id: 0, name: 'root', kind: 'dir', size: 100, allocated: 100, files: 3, folders: 0, children: [file(1, 60), file(2, 30), file(3, 10)] };
 describe('navigation after recycling', () => {
   it('refreshes every surviving size and returns to the deepest attached ancestor', () => {
     const parent = { ...root, id: 1, name: 'parent' };

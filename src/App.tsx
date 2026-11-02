@@ -1,13 +1,14 @@
 import { useEffect, useRef, useState } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import { listen, type UnlistenFn } from '@tauri-apps/api/event';
-import { open } from '@tauri-apps/plugin-dialog';
+import { open, save } from '@tauri-apps/plugin-dialog';
 import HomeScreen from './HomeScreen';
 import SettingsMenu from './SettingsMenu';
 import ScanScreen from './ScanScreen';
 import ResultsScreen, { SnapshotBanner } from './ResultsScreen';
 import DeleteDialog from './DeleteDialog';
 import {
+  count,
   emptyProgress,
   isDriveRoot,
   refreshTrails,
@@ -18,6 +19,8 @@ import {
   type LargeFile,
   type Progress,
   type SavedScan,
+  type SearchMatch,
+  type SearchResults,
   type TreeNode,
 } from './model';
 import './App.css';
@@ -26,6 +29,7 @@ type Phase = 'home' | 'scanning' | 'results';
 type ScanMessage = {
   scanId: number;
   root?: TreeNode;
+  hasAllocated?: boolean;
   message?: string;
 } & Partial<Progress>;
 type Menu = {
@@ -57,6 +61,7 @@ export default function App() {
   const [scanPath, setScanPath] = useState('');
   const [progress, setProgress] = useState<Progress>(emptyProgress);
   const [skipped, setSkipped] = useState(0);
+  const [hasAllocated, setHasAllocated] = useState(false);
   const [trail, setTrail] = useState<TreeNode[]>([]);
   const [history, setHistory] = useState<TreeNode[][]>([]);
   const [tree, setTree] = useState<TreeNode | null>(null);
@@ -71,6 +76,11 @@ export default function App() {
   const [recycled, setRecycled] = useState(0);
   const [deleted, setDeleted] = useState(0);
   const [refresh, setRefresh] = useState(0);
+  const [query, setQuery] = useState('');
+  const [search, setSearch] = useState<SearchResults | null>(null);
+  const [searchError, setSearchError] = useState('');
+  const [exporting, setExporting] = useState(false);
+  const searchInput = useRef<HTMLInputElement>(null);
   const deleteFocus = useRef<HTMLElement | null>(null);
   const deletePending = useRef(false);
   const session = useRef(0);
@@ -120,6 +130,7 @@ export default function App() {
     if (type === 'scan-complete') {
       if (!message.root) return;
       setSkipped(message.errors ?? 0);
+      setHasAllocated(message.hasAllocated ?? false);
       setTrail([message.root]);
       setHistory([]);
       setPhase('results');
@@ -236,6 +247,24 @@ export default function App() {
       stale = true;
     };
   }, [phase, currentId, trail[0], refresh]);
+  const searchText = query.trim();
+  useEffect(() => {
+    setSearch(null);
+    setSearchError('');
+    if (phase !== 'results' || currentId == null || !searchText) return;
+    let stale = false;
+    const timeout = window.setTimeout(() => {
+      invoke<SearchResults>('search', { nodeId: currentId, query: searchText, limit: 200 }).then(next => {
+        if (!stale) setSearch(next);
+      }).catch(e => {
+        if (!stale) setSearchError(String(e));
+      });
+    }, 200);
+    return () => {
+      stale = true;
+      window.clearTimeout(timeout);
+    };
+  }, [phase, currentId, trail[0], refresh, searchText]);
   async function start(path: string) {
     if (launching.current) return;
     launching.current = true;
@@ -277,12 +306,13 @@ export default function App() {
     setError('');
     setNotice('');
     try {
-      const loaded = await invoke<{ root: TreeNode; errors: number; saved: SavedScan }>('load_saved_scan', { path, scannedAt });
+      const loaded = await invoke<{ root: TreeNode; errors: number; hasAllocated: boolean; saved: SavedScan }>('load_saved_scan', { path, scannedAt });
       setScanPath(loaded.saved.path);
       setSnapshot(loaded.saved);
       setRecycled(loaded.saved.recycled ?? 0);
       setDeleted(loaded.saved.deleted ?? 0);
       setSkipped(loaded.errors);
+      setHasAllocated(loaded.hasAllocated);
       setTrail([loaded.root]);
       setHistory([]);
       setCancelling(false);
@@ -359,6 +389,36 @@ export default function App() {
   function up() {
     if (trail.length > 1) navigate(trail.slice(0, -1));
   }
+  async function openMatch(match: SearchMatch) {
+    const currentSession = session.current;
+    try {
+      const next = await invoke<TreeNode[]>('get_trail', { nodeId: match.id });
+      if (session.current === currentSession) navigate(next);
+    } catch (e) {
+      if (session.current === currentSession) setError(String(e));
+    }
+  }
+  async function exportScan() {
+    const node = trail[trail.length - 1];
+    if (node?.id == null || exporting) return;
+    const currentSession = session.current;
+    try {
+      const path = await save({
+        title: 'Export scan',
+        defaultPath: `${node.name.replace(/[\\/:*?"<>|]/g, '').trim() || 'scan'}.csv`,
+        filters: [{ name: 'CSV', extensions: ['csv'] }, { name: 'JSON', extensions: ['json'] }],
+      });
+      if (!path || session.current !== currentSession) return;
+      setExporting(true);
+      setError('');
+      const items = await invoke<number>('export_scan', { nodeId: node.id, path, format: /\.json$/i.test(path) ? 'json' : 'csv' });
+      setNotice(`Exported ${count(items, 'item')} to ${path.split(/[\\/]/).pop()}.`);
+    } catch (e) {
+      setError(String(e));
+    } finally {
+      setExporting(false);
+    }
+  }
   function enter(node: TreeNode) {
     if (node.kind !== 'dir' || node.id === null || loading || !tree) return;
     const path = findTrail(tree, node.id);
@@ -367,7 +427,14 @@ export default function App() {
   useEffect(() => {
     const keydown = (e: KeyboardEvent) => {
       if (deleting) return;
+      if (phase === 'results' && (e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'f') {
+        e.preventDefault();
+        searchInput.current?.focus();
+        searchInput.current?.select();
+        return;
+      }
       if (e.key === 'Escape') {
+        setQuery('');
         setHover(null);
         setFilter(null);
         setMenu(null);
@@ -569,6 +636,7 @@ export default function App() {
           drive={trail.length === 1 && drive && isDriveRoot(scanPath, drive.mount) ? drive : undefined}
           scanPath={scanPath}
           skipped={skipped}
+          hasAllocated={hasAllocated}
           snapshot={snapshot}
           recycled={recycled}
           deleted={deleted}
@@ -590,6 +658,14 @@ export default function App() {
           setFilter={setFilter}
           context={context}
           action={action}
+          query={query}
+          setQuery={setQuery}
+          searchRef={searchInput}
+          search={search}
+          searchError={searchError}
+          openMatch={match => void openMatch(match)}
+          exporting={exporting}
+          exportScan={() => void exportScan()}
         />
       )}
       {menu && (

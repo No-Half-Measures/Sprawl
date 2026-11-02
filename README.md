@@ -24,12 +24,21 @@ Sprawl is built with [Tauri 2](https://tauri.app), Rust and React.
   parallel. Drive rescans try to replay the NTFS change journal and only fall
   back to a full read when they can't.
 - **Treemap.** The map shows the current folder three levels deep, coloured by
-  file type, and stays sharp on high-DPI screens. Hover a block for its size and
-  item counts. Click a folder to zoom in. Right-click for actions.
+  file type, and stays sharp on high-DPI screens. Hover a block for its size,
+  size on disk and item counts. Click a folder to zoom in. Right-click for
+  actions.
+- **Size on disk.** Next to each logical size, Sprawl shows the space the drive
+  actually allocates, so compressed, sparse and cloud-placeholder files show
+  their real usage. MFT scans count a hard-linked file's space once.
 - **Sorted contents, largest files and type breakdown.** Each folder lists its
   children by size and percentage, the 50 largest files under it, and how much
   space goes to Video, Images, Audio, Documents, Archives, Code, Apps & system
   and Other. Hover a category to highlight its files in the map.
+- **Search.** Find items under the current folder by name, wildcard, size,
+  type or kind, such as `*.iso size>1GB` or `type:video kind:file`. The side
+  panel lists the largest matches, and the map dims everything else.
+- **Export.** Save every file and folder under the current folder, with full
+  paths, sizes, size on disk, item counts and type, as CSV or JSON.
 - **Changes since last scan.** Sprawl saves each completed scan. When you scan
   the same path again, it shows how much each folder grew or shrank, which items
   are new, what disappeared, and the 50 files that grew the most.
@@ -37,8 +46,8 @@ Sprawl is built with [Tauri 2](https://tauri.app), Rust and React.
   folder without rescanning. Saved results show their age and warn you once
   they look stale.
 - **Missing space.** At a drive root, Sprawl reports how much used space the
-  scan couldn't account for. System files, restore points and unreadable
-  folders usually explain the gap.
+  scan couldn't account for, comparing it with the size on disk it found.
+  System files, restore points and unreadable folders usually explain the gap.
 - **Safe deletion.** You can send an item to the Recycle Bin, or delete it
   permanently after a second confirmation. Sprawl refuses to delete drive
   roots, the scan root, the Windows and Program Files folders, ProgramData and
@@ -47,8 +56,8 @@ Sprawl is built with [Tauri 2](https://tauri.app), Rust and React.
 - **Explorer integration.** Add **Scan with Sprawl** to the right-click menu
   for folders, folder backgrounds and drives. This doesn't need admin.
 - **Keyboard shortcuts.** Backspace or Alt+Left goes back, Alt+Up goes to the
-  parent, Delete opens the delete dialog, Shift+F10 opens a context menu, and
-  Escape clears highlights.
+  parent, Ctrl+F focuses the search, Delete opens the delete dialog, Shift+F10
+  opens a context menu, and Escape clears the search and highlights.
 - **Light and dark themes.** Sprawl follows the Windows setting.
 
 ## Performance
@@ -162,6 +171,24 @@ Tauri backend reads the disk.
 3. Right-click an item to open it, reveal it in Explorer, copy its path or
    delete it.
 
+**Search.** Type in the search field, or press Ctrl+F. Every term must match,
+and names ignore case:
+
+| Term | Matches |
+| --- | --- |
+| `report` | names that contain `report` |
+| `"two words"` | names that contain the phrase |
+| `*.iso`, `report-??.pdf` | whole names, with `*` for any text and `?` for one character |
+| `size>1GB`, `size<=500MB` | logical size, with `>`, `<`, `>=` or `<=` and B, KB, MB, GB or TB |
+| `type:video` | files of a category: `video`, `images`, `audio`, `documents`, `archives`, `code`, `apps` or `other` |
+| `kind:file`, `kind:dir` | files or folders only |
+
+The search covers everything under the current folder and follows you as you
+navigate. Click a folder in the results to open it.
+
+**Export.** **Export…** saves the current folder and everything under it as CSV
+or JSON, chosen by the file extension. CSV files are UTF-8 with a header row.
+
 **Admin mode.** Without admin rights, Sprawl skips folders it can't read and
 uses the slower directory walk. Choose **Restart as administrator** on the home
 screen, or turn on **Always run as administrator** in the settings menu behind
@@ -195,6 +222,8 @@ To build it yourself, run `cargo build --release --bin sprawl-cli` in
 ```text
 sprawl-cli scan C:\                     # scan, save, and report
 sprawl-cli show C:\Users\me\AppData     # report from the newest saved scan
+sprawl-cli find C:\ "*.iso size>1GB"    # search the newest saved scan
+sprawl-cli export C:\Users --output users.csv   # export a saved scan
 sprawl-cli list                         # list saved scans
 ```
 
@@ -202,7 +231,10 @@ A report covers the path's size, its largest children (`--depth` levels deep,
 `--limit` per folder), its largest files, a type breakdown, and changes since
 the previous scan. It also includes the scan's age, so an agent can tell when
 to rescan. `show` works for any folder inside a saved scan, so one drive scan
-answers questions about every folder on it. The CLI shares saved scans with
+answers questions about every folder on it. `find` takes the same queries as
+the app's search and prints the largest `--limit` matches with full paths and
+the total match count. `export` writes the same CSV or JSON as the app; use
+`--format` or let the `--output` extension decide. The CLI shares saved scans with
 the app and never deletes files. Run it elevated to scan whole drives from the
 master file table.
 
@@ -215,10 +247,15 @@ Copy the `sprawl` folder into `~/.claude/skills/` for Claude Code or
 ## Limitations
 
 - Windows only.
-- Sprawl reports logical file sizes. It ignores compression, sparse files and
-  hard links, so totals can differ from the space actually allocated on disk.
-- Sprawl doesn't follow symlinks or junctions. It counts cloud placeholders,
-  such as OneDrive files, at their logical size.
+- The treemap, sorting and percentages use logical file sizes. Size on disk
+  appears beside them. Scans saved by older versions of Sprawl don't have it,
+  so it stays hidden until you rescan.
+- The directory walk, used without admin and for folder scans, counts every
+  name of a hard-linked file, both in size and in size on disk. Only MFT scans
+  count a hard-linked file's space once.
+- Sprawl doesn't follow symlinks or junctions. Cloud placeholders, such as
+  OneDrive files, count at their logical size, and only their downloaded parts
+  count towards size on disk.
 - Results are a snapshot. Rescan to pick up files that changed afterwards.
 
 ## Development
@@ -243,13 +280,16 @@ saved-scan format. A few details live only here:
 - `get_tree` caps depth at 8 and children per folder at 500, and returns about
   8,000 nodes at most. Omitted siblings become one synthetic node with
   `id: null`.
-- `get_largest_files` returns at most 1,000 files. `get_type_breakdown` returns
+- `get_largest_files` and `search` return at most 1,000 items.
+  `get_trail(nodeId)` returns the shallow nodes from the root to an item, so
+  folder search results can be opened. `get_type_breakdown` returns
   all eight categories, including empty ones.
 - `start_scan` returns a scan ID, and every scan event carries it as `scanId`,
   so the UI can ignore late events from an older scan. The events are
   `scan-progress` with `{ scanId, files, folders, bytes, errors, currentPath }`,
-  `scan-complete` with `{ scanId, root, errors }`, `scan-cancelled` with
-  `{ scanId }` and `scan-error` with `{ scanId, message }`.
+  `scan-complete` with `{ scanId, root, errors, hasAllocated }`,
+  `scan-cancelled` with `{ scanId }` and `scan-error` with
+  `{ scanId, message }`.
 - `get_node_path` backs Copy path, and `open_folder` opens a scanned directory.
 - [src/categories.json](src/categories.json) defines category IDs, labels,
   colours and extensions. The Rust backend and the React frontend share it.

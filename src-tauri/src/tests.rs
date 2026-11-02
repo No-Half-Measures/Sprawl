@@ -157,12 +157,14 @@ fn saved_scan_round_trip() {
     assert_eq!(loaded.nodes.len(), tree.nodes.len());
     assert_eq!(loaded.root_path, tree.root_path);
     assert_eq!(loaded.errors, tree.errors);
+    assert!(loaded.has_allocated);
     for (actual, expected) in loaded.nodes.iter().zip(&tree.nodes) {
         assert_eq!(actual.name, expected.name);
         assert_eq!(actual.parent, expected.parent);
         assert_eq!(actual.children, expected.children);
         assert_eq!(actual.kind, expected.kind);
         assert_eq!(actual.size, expected.size);
+        assert_eq!(actual.allocated, expected.allocated);
         assert_eq!(actual.files, expected.files);
         assert_eq!(actual.folders, expected.folders);
         assert_eq!(actual.category, expected.category);
@@ -295,6 +297,7 @@ fn remove_updates_ancestors_order_counts_and_rejects_detached_descendants() {
     for (id, expected) in [(0, (70, 3, 3)), (1, (30, 2, 1)), (3, (10, 1, 0))] {
         let n = tree.node(id).unwrap();
         assert_eq!((n.size, n.files, n.folders), expected);
+        assert_eq!(n.allocated, n.size * 2);
     }
     assert_eq!(tree.nodes[0].children, vec![2, 1]);
     assert_eq!(tree.nodes[1].children, vec![4, 3]);
@@ -656,6 +659,7 @@ fn comparison_tree(entries: &[(&str, usize, Kind, u64)]) -> Tree {
             children: vec![],
             kind: Kind::Dir,
             size: 0,
+            allocated: 0,
             files: 0,
             folders: 0,
             category: None,
@@ -664,6 +668,7 @@ fn comparison_tree(entries: &[(&str, usize, Kind, u64)]) -> Tree {
         errors: 0,
         records: vec![],
         checkpoint: None,
+        has_allocated: true,
     };
     for &(name, parent, kind, size) in entries {
         let id = tree.nodes.len();
@@ -673,6 +678,7 @@ fn comparison_tree(entries: &[(&str, usize, Kind, u64)]) -> Tree {
             children: vec![],
             kind,
             size,
+            allocated: size * 2,
             files: u64::from(kind == Kind::File),
             folders: 0,
             category: None,
@@ -680,13 +686,15 @@ fn comparison_tree(entries: &[(&str, usize, Kind, u64)]) -> Tree {
         tree.nodes[parent].children.push(id);
     }
     for id in (1..tree.nodes.len()).rev() {
-        let (size, files, folders) = (
+        let (size, allocated, files, folders) = (
             tree.nodes[id].size,
+            tree.nodes[id].allocated,
             tree.nodes[id].files,
             tree.nodes[id].folders + u64::from(tree.nodes[id].kind == Kind::Dir),
         );
         let parent = tree.nodes[id].parent.unwrap();
         tree.nodes[parent].size += size;
+        tree.nodes[parent].allocated += allocated;
         tree.nodes[parent].files += files;
         tree.nodes[parent].folders += folders;
     }
@@ -1307,6 +1315,49 @@ fn event_payloads_match_the_ipc_contract() {
 }
 
 #[test]
+fn completed_and_loaded_payloads_report_allocated_sizes() {
+    let (_dir, tree) = fixture();
+    let root = tree.view(0, 0, 0).unwrap();
+    let completed = serde_json::to_value(crate::Completed {
+        root: root.clone(),
+        errors: 0,
+        has_allocated: true,
+    })
+    .unwrap();
+    assert_eq!(completed["hasAllocated"], true);
+    assert_eq!(completed["root"]["allocated"], tree.nodes[0].allocated);
+    let loaded = serde_json::to_value(crate::LoadedScan {
+        root,
+        errors: 0,
+        has_allocated: false,
+        saved: saved(&tree, 1),
+    })
+    .unwrap();
+    assert_eq!(loaded["hasAllocated"], false);
+}
+
+#[test]
+fn directory_walk_reports_allocated_sizes_and_rolls_them_up() {
+    let dir = tempfile::tempdir().unwrap();
+    fs::create_dir(dir.path().join("nested")).unwrap();
+    fs::write(dir.path().join("nested/data.bin"), vec![1; 100_000]).unwrap();
+    fs::write(dir.path().join("empty.bin"), []).unwrap();
+    let tree = scanner::scan(dir.path(), None, &AtomicBool::new(false), |_| {})
+        .unwrap()
+        .unwrap();
+    assert!(tree.has_allocated);
+    let find = |name: &str| tree.nodes.iter().find(|n| n.name == name).unwrap();
+    let allocated = find("data.bin").allocated;
+    assert!(allocated > 0);
+    assert_eq!(find("data.bin").size, 100_000);
+    assert_eq!(find("empty.bin").allocated, 0);
+    assert_eq!(find("nested").allocated, allocated);
+    assert_eq!(tree.nodes[0].allocated, allocated);
+    assert_eq!(tree.view(0, 1, 10).unwrap().allocated, allocated);
+    assert_eq!(tree.largest(0, 1).unwrap()[0].allocated, allocated);
+}
+
+#[test]
 fn empty_folder_and_progress_totals() {
     let dir = tempfile::tempdir().unwrap();
     let progress = std::sync::Mutex::new(Vec::new());
@@ -1342,6 +1393,7 @@ fn total_response_budget_preserves_each_folders_size() {
             children: vec![],
             kind: Kind::Dir,
             size: 100,
+            allocated: 100,
             files: 100,
             folders: 0,
             category: None,
@@ -1355,6 +1407,7 @@ fn total_response_budget_preserves_each_folders_size() {
                 children: vec![],
                 kind: Kind::File,
                 size: 1,
+                allocated: 1,
                 files: 1,
                 folders: 0,
                 category: Some(scanner::category("file")),
@@ -1433,11 +1486,12 @@ fn smoke_real_directory() {
     let root = &tree.nodes[0];
     let elapsed = start.elapsed().as_secs_f64();
     eprintln!(
-        "SMOKE {path}: {:.3}s, {} files, {} folders, {} bytes, {} access errors, {:.0} files/sec",
+        "SMOKE {path}: {:.3}s, {} files, {} folders, {} bytes, {} on disk, {} access errors, {:.0} files/sec",
         elapsed,
         root.files,
         root.folders,
         root.size,
+        root.allocated,
         tree.errors,
         root.files as f64 / elapsed
     );
@@ -1489,6 +1543,11 @@ fn cli_shows_saved_subfolders_with_changes() {
     assert_eq!(report.kind, Kind::Dir);
     assert_eq!(report.size, 105);
     assert_eq!(report.scan.scanned_at, 2);
+    assert!(report.scan.allocated_known);
+    assert_eq!(
+        report.allocated,
+        report.children.iter().map(|c| c.allocated).sum::<u64>()
+    );
     assert_eq!(report.unaccounted, None);
     let names: Vec<_> = report.children.iter().map(|c| c.name.as_str()).collect();
     assert_eq!(names, ["code.rs", "new.txt"]);
@@ -1512,5 +1571,281 @@ fn cli_prints_its_version() {
     assert_eq!(
         crate::cli::execute(vec!["--version".into()]).unwrap(),
         concat!("sprawl-cli ", env!("CARGO_PKG_VERSION"))
+    );
+}
+
+fn search(tree: &Tree, id: usize, query: &str, limit: usize) -> (u64, Vec<String>) {
+    let matches = tree.search(id, &query.parse().unwrap(), limit).unwrap();
+    let paths = matches
+        .results
+        .iter()
+        .map(|m| m.relative_path.replace('\\', "/"))
+        .collect();
+    (matches.total, paths)
+}
+
+#[test]
+fn search_is_scoped_ranked_and_limited() {
+    let (_, tree) = fixture();
+    let nested = tree.nodes[0].children[1];
+    assert_eq!(tree.nodes[nested].name, "nested");
+    assert_eq!(
+        search(&tree, 0, "", 10).1,
+        [
+            "large.MP4",
+            "nested",
+            "nested/code.rs",
+            "small.txt",
+            "empty"
+        ]
+    );
+    assert_eq!(
+        search(&tree, 0, "", 2),
+        (5, vec!["large.MP4".into(), "nested".into()])
+    );
+    assert_eq!(search(&tree, 0, "", 0), (5, vec![]));
+    assert_eq!(search(&tree, nested, "", 10), (1, vec!["code.rs".into()]));
+    assert_eq!(search(&tree, nested, "nested", 10), (0, vec![]));
+    assert_eq!(search(&tree, 0, "NEST", 10).1, ["nested"]);
+    assert_eq!(search(&tree, 0, "*.mp4", 10).1, ["large.MP4"]);
+    assert_eq!(
+        search(&tree, 0, "?????.*", 10).1,
+        ["large.MP4", "small.txt"]
+    );
+    assert_eq!(search(&tree, 0, "kind:dir", 10).1, ["nested", "empty"]);
+    assert_eq!(
+        search(&tree, 0, "kind:file size>=40", 10).1,
+        ["large.MP4", "nested/code.rs"]
+    );
+    assert_eq!(search(&tree, 0, "size<40", 10).1, ["small.txt", "empty"]);
+    assert_eq!(search(&tree, 0, "size>1KB", 10).0, 0);
+    assert_eq!(search(&tree, 0, "type:code", 10).1, ["nested/code.rs"]);
+    assert_eq!(search(&tree, 0, "type:video l", 10).1, ["large.MP4"]);
+    assert_eq!(search(&tree, 0, "type:video small", 10).0, 0);
+
+    let found = tree.search(0, &"code".parse().unwrap(), 10).unwrap();
+    let json = serde_json::to_value(&found).unwrap();
+    assert_eq!(json["total"], 1);
+    let item = &json["results"][0];
+    assert_eq!(item["id"], tree.nodes[nested].children[0]);
+    assert_eq!(item["name"], "code.rs");
+    assert_eq!(item["kind"], "file");
+    assert_eq!(item["size"], 40);
+    assert_eq!(item["category"], "code");
+    assert!(item["allocated"].is_u64());
+    assert!(item["relativePath"].is_string());
+    let folder = tree.search(0, &"kind:dir".parse().unwrap(), 1).unwrap();
+    assert!(
+        serde_json::to_value(&folder).unwrap()["results"][0]
+            .get("category")
+            .is_none()
+    );
+    assert!(tree.search(usize::MAX, &"x".parse().unwrap(), 1).is_err());
+}
+
+fn export_text(tree: &Tree, id: usize, format: crate::export::Format) -> (u64, String) {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("out");
+    let count = crate::export::export(tree, id, &path, format).unwrap();
+    assert_eq!(fs::read_dir(dir.path()).unwrap().count(), 1);
+    (count, fs::read_to_string(path).unwrap())
+}
+
+#[test]
+fn export_csv_has_bom_header_and_quotes_fields() {
+    let dir = tempfile::tempdir().unwrap();
+    fs::create_dir(dir.path().join("a,b")).unwrap();
+    fs::write(dir.path().join("a,b").join("say, hi.txt"), [0; 7]).unwrap();
+    fs::write(dir.path().join("plain.mp4"), [0; 3]).unwrap();
+    let tree = scanner::scan(dir.path(), None, &AtomicBool::new(false), |_| {})
+        .unwrap()
+        .unwrap();
+    let root = tree.root_path.to_string_lossy().into_owned();
+    assert!(!root.contains([',', '"']));
+    let sep = std::path::MAIN_SEPARATOR;
+    let folder = tree.nodes[0].children[0];
+    let file = tree.nodes[folder].children[0];
+    let video = tree.nodes[0].children[1];
+    let allocated = |id: usize| tree.nodes[id].allocated;
+    let (count, text) = export_text(&tree, 0, crate::export::Format::Csv);
+    assert_eq!(count, 4);
+    let lines: Vec<_> = text.split("\r\n").collect();
+    assert_eq!(
+        lines,
+        [
+            "\u{feff}path,kind,size,allocated,files,folders,category".to_string(),
+            format!("{root},dir,10,{},2,1,", allocated(0)),
+            format!("\"{root}{sep}a,b\",dir,7,{},1,0,", allocated(folder)),
+            format!(
+                "\"{root}{sep}a,b{sep}say, hi.txt\",file,7,{},1,0,documents",
+                allocated(file)
+            ),
+            format!("{root}{sep}plain.mp4,file,3,{},1,0,video", allocated(video)),
+            String::new(),
+        ]
+    );
+
+    let mut old = tree.clone();
+    old.has_allocated = false;
+    let (_, text) = export_text(&old, folder, crate::export::Format::Csv);
+    let lines: Vec<_> = text.split("\r\n").collect();
+    assert_eq!(lines[0], "\u{feff}path,kind,size,files,folders,category");
+    assert_eq!(lines[1], format!("\"{root}{sep}a,b\",dir,7,1,0,"));
+}
+
+#[test]
+fn export_json_is_a_valid_array_and_nulls_unknown_allocated() {
+    let (_, tree) = fixture();
+    let (count, text) = export_text(&tree, 0, crate::export::Format::Json);
+    assert_eq!(count, 6);
+    let rows: Vec<serde_json::Value> = serde_json::from_str(&text).unwrap();
+    assert_eq!(rows.len(), 6);
+    let root = tree.root_path.to_string_lossy().into_owned();
+    assert_eq!(rows[0]["path"], root.as_str());
+    assert_eq!(rows[0]["kind"], "dir");
+    assert_eq!(rows[0]["size"], 150);
+    assert_eq!(rows[0]["files"], 3);
+    assert_eq!(rows[0]["folders"], 2);
+    assert_eq!(rows[0]["category"], serde_json::Value::Null);
+    assert_eq!(rows[0]["allocated"], tree.nodes[0].allocated);
+    let paths: Vec<_> = rows
+        .iter()
+        .map(|r| {
+            Path::new(r["path"].as_str().unwrap())
+                .strip_prefix(&tree.root_path)
+                .unwrap()
+                .to_string_lossy()
+                .replace('\\', "/")
+        })
+        .collect();
+    assert_eq!(
+        paths,
+        [
+            "",
+            "large.MP4",
+            "nested",
+            "nested/code.rs",
+            "small.txt",
+            "empty"
+        ]
+    );
+    assert_eq!(rows[1]["category"], "video");
+    assert_eq!(rows[3]["category"], "code");
+
+    let mut old = tree.clone();
+    old.has_allocated = false;
+    let nested = old.nodes[0].children[1];
+    let (count, text) = export_text(&old, nested, crate::export::Format::Json);
+    assert_eq!(count, 2);
+    let rows: Vec<serde_json::Value> = serde_json::from_str(&text).unwrap();
+    assert!(rows.iter().all(|r| r["allocated"].is_null()));
+    assert_eq!(rows[1]["size"], 40);
+}
+
+#[test]
+fn failed_export_leaves_no_partial_file() {
+    let (_, tree) = fixture();
+    let dir = tempfile::tempdir().unwrap();
+    let target = dir.path().join("taken");
+    fs::create_dir(&target).unwrap();
+    fs::write(target.join("keep"), b"x").unwrap();
+    let error = crate::export::export(&tree, 0, &target, crate::export::Format::Csv).unwrap_err();
+    assert!(error.contains("Could not export"), "{error}");
+    let names: Vec<_> = fs::read_dir(dir.path())
+        .unwrap()
+        .map(|e| e.unwrap().file_name())
+        .collect();
+    assert_eq!(names, ["taken"]);
+
+    let file = dir.path().join("out.csv");
+    assert!(crate::export::export(&tree, usize::MAX, &file, crate::export::Format::Csv).is_err());
+    assert!(!file.exists());
+    assert_eq!(fs::read_dir(dir.path()).unwrap().count(), 1);
+}
+
+#[test]
+fn export_formats_parse_and_follow_extensions() {
+    use crate::export::Format;
+    assert_eq!(Format::parse("CSV"), Ok(Format::Csv));
+    assert_eq!(Format::parse("json"), Ok(Format::Json));
+    assert!(Format::parse("xml").unwrap_err().contains("csv or json"));
+    assert_eq!(Format::for_path(Path::new("a.JSON")), Format::Json);
+    assert_eq!(Format::for_path(Path::new("a.csv")), Format::Csv);
+    assert_eq!(Format::for_path(Path::new("a.txt")), Format::Csv);
+}
+
+#[test]
+fn cli_finds_and_exports_from_saved_scans() {
+    let (root, tree) = fixture();
+    let dir = tempfile::tempdir().unwrap();
+    cache::save(dir.path(), &tree, &saved(&tree, 1)).unwrap();
+
+    let found = crate::cli::find(dir.path(), root.path(), "kind:file size>=40", 1).unwrap();
+    assert_eq!(found.total, 2);
+    assert_eq!(found.query, "kind:file size>=40");
+    assert_eq!(found.path, tree.root_path.to_string_lossy());
+    assert_eq!(found.results.len(), 1);
+    assert_eq!(
+        Path::new(&found.results[0].path),
+        tree.root_path.join("large.MP4")
+    );
+    assert_eq!(found.results[0].category.as_deref(), Some("video"));
+    assert_eq!(found.scan.scanned_at, 1);
+    let nested = crate::cli::find(dir.path(), &root.path().join("nested"), "*.rs", 20).unwrap();
+    assert_eq!(nested.total, 1);
+    assert!(Path::new(&nested.results[0].path).ends_with("nested/code.rs"));
+    let invalid = crate::cli::find(dir.path(), root.path(), "type:nope", 20);
+    assert!(invalid.err().unwrap().contains("Unknown type"));
+
+    let out = tempfile::tempdir().unwrap();
+    let output = out.path().join("nested.json");
+    let exported = crate::cli::export_scan(
+        dir.path(),
+        &root.path().join("nested"),
+        &output,
+        crate::export::Format::for_path(&output),
+    )
+    .unwrap();
+    assert_eq!(exported.items, 2);
+    assert_eq!(exported.format, crate::export::Format::Json);
+    let rows: Vec<serde_json::Value> =
+        serde_json::from_str(&fs::read_to_string(&output).unwrap()).unwrap();
+    assert_eq!(rows.len(), 2);
+}
+
+#[test]
+#[ignore = "manual real-directory search timing"]
+fn smoke_search_real_directory() {
+    let path = std::env::var("SPRAWL_SMOKE_PATH").unwrap_or_else(|_| r"C:\Windows\System32".into());
+    let tree = scanner::scan(Path::new(&path), None, &AtomicBool::new(false), |_| {})
+        .unwrap()
+        .unwrap();
+    for query in [
+        "dll",
+        "*.dll size>1MB",
+        "type:apps kind:file",
+        "\"no such name\"",
+    ] {
+        let start = Instant::now();
+        let found = tree.search(0, &query.parse().unwrap(), 1000).unwrap();
+        eprintln!(
+            "SEARCH {query:?} over {} nodes: {:.1} ms, {} matches",
+            tree.nodes.len(),
+            start.elapsed().as_secs_f64() * 1000.0,
+            found.total
+        );
+    }
+    let out = tempfile::tempdir().unwrap();
+    let start = Instant::now();
+    let count = crate::export::export(
+        &tree,
+        0,
+        &out.path().join("export.csv"),
+        crate::export::Format::Csv,
+    )
+    .unwrap();
+    eprintln!(
+        "EXPORT {count} items: {:.1} ms",
+        start.elapsed().as_secs_f64() * 1000.0
     );
 }

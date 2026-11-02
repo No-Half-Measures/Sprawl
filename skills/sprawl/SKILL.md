@@ -29,6 +29,15 @@ it to the user PATH. Ask the user before running it.
    full drive scan can take a minute or more.
 4. Drill down with `show <subfolder>` rather than raising `--depth` on a large
    tree. Use `--limit` to see more items per folder.
+5. To find specific items anywhere under a path, run
+   `sprawl-cli find <path> "<query>"`. Terms are space-separated and all must
+   match: a word matches names containing it, `*.iso` or `log-??.txt` match
+   whole names, `size>1GB` or `size<=10MB` compare logical size, `type:video`
+   (also `images`, `audio`, `documents`, `archives`, `code`, `apps`, `other`)
+   and `kind:file` or `kind:dir` filter. Quote phrases with spaces. It prints
+   the `total` match count and the largest `--limit` matches with full paths.
+6. If the user wants a full listing in a file, run
+   `sprawl-cli export <path> --output <file.csv|file.json>`.
 
 Saved scans are shared with the Sprawl app, so scans the user ran there are
 available too.
@@ -43,11 +52,17 @@ available too.
   items that didn't exist then, and `changes.grownFiles` lists the files that
   grew most. `changes` is null when there is no earlier scan.
 - `unaccounted`, at drive roots only, is used space the scan couldn't see:
-  system files, restore points and unreadable folders.
+  system files, restore points and unreadable folders. It compares used space
+  with `allocated` when that is known.
 - `scan.elevated: false` or nonzero `scan.errors` means some folders were
   skipped. Running the scan as administrator includes them.
-- Sizes are logical. Compressed, sparse and hard-linked files can make totals
-  differ from what the operating system reports.
+- `size` is the logical size, which `children` are sorted by. `allocated` is
+  the space the files take on disk, after compression, sparse regions and
+  cloud placeholders. It appears on the report, every child and every file.
+  When `scan.allocatedKnown` is false the scan predates allocated sizes and
+  `allocated` just repeats `size`; rescan to get real values.
+- Scans run as administrator count a hard-linked file's `allocated` once.
+  Folder scans and scans without admin count it under every name.
 
 ## Safety
 

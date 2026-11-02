@@ -128,6 +128,7 @@ pub(crate) struct Record {
     pub excluded: bool,
     pub names: Vec<Link>,
     pub size: Option<u64>,
+    pub allocated: Option<u64>,
     pub extents: Vec<Extent>,
     pub attribute_list: Vec<u8>,
     pub nonresident_attribute_list: bool,
@@ -276,10 +277,17 @@ pub(crate) fn parse_record(buf: &mut [u8], number: u64) -> Result<Option<Record>
             0x80 if name_len == 0 => {
                 if let Some(value) = value {
                     record.size = Some(value.len() as u64);
+                    record.allocated = Some(0);
                 } else {
                     let vcn = u64_at(attr, 16)?;
                     if vcn == 0 {
                         record.size = Some(u64_at(attr, 48)?);
+                        // Compressed or sparse streams record their real usage separately.
+                        let compressed_or_sparse = u16_at(attr, 12)? & 0x8001 != 0;
+                        record.allocated = Some(u64_at(
+                            attr,
+                            if compressed_or_sparse { 0x40 } else { 0x28 },
+                        )?);
                     }
                     if record.base.unwrap_or(number) == 0 {
                         decode_runs(attr, &mut record.extents)?;
@@ -300,6 +308,7 @@ pub(crate) fn parse_record(buf: &mut [u8], number: u64) -> Result<Option<Record>
 fn merge_extension(base: &mut Record, mut extension: Record) {
     base.names.append(&mut extension.names);
     base.size = base.size.or(extension.size);
+    base.allocated = base.allocated.or(extension.allocated);
     base.excluded |= extension.excluded;
     base.extents.append(&mut extension.extents);
 }
@@ -403,6 +412,7 @@ fn base_table(previous: &Tree, cancel: &AtomicBool) -> Result<BTreeMap<u64, Reco
     if previous.records.len() != previous.nodes.len()
         || previous.records.first() != Some(&5)
         || previous.errors != 0
+        || !previous.has_allocated
     {
         return Err("Previous MFT records unavailable");
     }
@@ -419,6 +429,7 @@ fn base_table(previous: &Tree, cancel: &AtomicBool) -> Result<BTreeMap<u64, Reco
             number,
             directory,
             size: (!directory).then_some(node.size),
+            allocated: (!directory).then_some(0),
             ..Default::default()
         });
         if node.kind == Kind::Other
@@ -427,6 +438,10 @@ fn base_table(previous: &Tree, cancel: &AtomicBool) -> Result<BTreeMap<u64, Reco
             || (!directory && record.size != Some(node.size))
         {
             return Err("Inconsistent previous MFT records");
+        }
+        // Only one link of a hard-linked file carries its allocated size.
+        if let Some(allocated) = &mut record.allocated {
+            *allocated += node.allocated;
         }
         if let Some(parent) = node.parent {
             record.names.push(Link {
@@ -661,6 +676,7 @@ pub(crate) fn build_tree(
             children: vec![],
             kind: Kind::Dir,
             size: 0,
+            allocated: 0,
             files: 0,
             folders: 0,
             category: None,
@@ -669,6 +685,7 @@ pub(crate) fn build_tree(
         errors: 0,
         records: vec![5],
         checkpoint: None,
+        has_allocated: true,
     };
     let mut visited = vec![false; bases.len()];
     visited[5] = true;
@@ -686,7 +703,7 @@ pub(crate) fn build_tree(
             if cancel.load(Ordering::Relaxed) {
                 return None;
             }
-            let record = bases[number].as_ref()?;
+            let record = bases[number].as_mut()?;
             if record.directory {
                 if visited[number] {
                     continue;
@@ -709,6 +726,12 @@ pub(crate) fn build_tree(
                     0
                 } else {
                     record.size.unwrap_or(0)
+                },
+                // The first link of a hard-linked file counts its allocation; later links don't.
+                allocated: if record.directory {
+                    0
+                } else {
+                    record.allocated.take().unwrap_or(0)
                 },
                 files: u64::from(kind == Kind::File),
                 folders: 0,
@@ -2785,6 +2808,82 @@ mod tests {
             }
         }
         assert_eq!(tree.nodes[0].category, Some(scanner::category("a.txt")));
+    }
+
+    fn allocated(size: u64, allocated: u64) -> Vec<u8> {
+        let mut attr = nonresident(size, 0, 1, &[0x11, 2, 20, 0]);
+        put64(&mut attr, 0x28, allocated);
+        attr
+    }
+
+    #[test]
+    fn data_allocation_is_zero_when_resident_and_compressed_when_flagged() {
+        let record = parsed(24, 1, 0, &[resident(0x80, &[0; 300], "")]);
+        assert_eq!((record.size, record.allocated), (Some(300), Some(0)));
+        let record = parsed(25, 1, 0, &[allocated(5000, 8192)]);
+        assert_eq!((record.size, record.allocated), (Some(5000), Some(8192)));
+        for flags in [0x0001, 0x8000] {
+            let mut attr = nonresident(1 << 20, 0, 255, &[0; 8]);
+            put16(&mut attr, 12, flags);
+            put16(&mut attr, 32, 72);
+            put64(&mut attr, 0x28, 1 << 20);
+            put64(&mut attr, 0x40, 12288);
+            attr.extend([0x11, 3, 20, 0, 0, 0, 0, 0]);
+            let len = attr.len() as u32;
+            put32(&mut attr, 4, len);
+            let record = parsed(26, 1, 0, &[attr]);
+            assert_eq!(
+                (record.size, record.allocated),
+                (Some(1 << 20), Some(12288)),
+                "flags {flags:#x}"
+            );
+        }
+        let continuation = parsed(27, 1, 0, &[nonresident(999, 3, 4, &[0x11, 2, 30, 0])]);
+        assert_eq!(continuation.allocated, None);
+    }
+
+    #[test]
+    fn hard_links_count_allocated_once_including_journal_replay() {
+        let linked = || {
+            parsed(
+                26,
+                1,
+                0,
+                &[
+                    filename(24, "b.bin", 1),
+                    filename(25, "a.bin", 1),
+                    allocated(5000, 8192),
+                ],
+            )
+        };
+        let full = tree(vec![
+            root(),
+            directory(24, 5, "a"),
+            directory(25, 5, "b"),
+            linked(),
+        ]);
+        assert!(full.has_allocated);
+        assert_eq!((full.nodes[0].size, full.nodes[0].allocated), (10000, 8192));
+        let links: Vec<_> = full
+            .nodes
+            .iter()
+            .filter(|n| n.kind == Kind::File)
+            .map(|n| (n.name.as_str(), n.allocated))
+            .collect();
+        assert_eq!(links, [("b.bin", 8192), ("a.bin", 0)]);
+        let cancel = AtomicBool::new(false);
+        let unchanged = tree(base_table(&full, &cancel).unwrap().into_values().collect());
+        assert_same_tree(&unchanged, &full);
+        let patched = patch_tree(&full, &[(26, false)].into(), &cancel, |number| {
+            Ok((number == 26).then(linked))
+        })
+        .unwrap();
+        assert_same_tree(&patched, &full);
+        let legacy = Tree {
+            has_allocated: false,
+            ..full
+        };
+        assert!(base_table(&legacy, &cancel).is_err());
     }
 
     #[test]

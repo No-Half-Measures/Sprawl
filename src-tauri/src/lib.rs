@@ -2,9 +2,11 @@ mod admin;
 mod cache;
 mod changes;
 pub mod cli;
+mod export;
 mod mft;
 mod recycle;
 mod scanner;
+mod search;
 mod shell;
 
 use cache::SavedScan;
@@ -48,6 +50,7 @@ impl Session {
             return Ok(Some(LoadedScan {
                 root: tree.view(0, 0, 0)?,
                 errors: tree.errors,
+                has_allocated: tree.has_allocated,
                 saved: saved.clone(),
             }));
         }
@@ -216,9 +219,11 @@ async fn list_saved_scans(app: tauri::AppHandle) -> Result<Vec<SavedScan>, Strin
 }
 
 #[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
 struct LoadedScan {
     root: scanner::ViewNode,
     errors: u64,
+    has_allocated: bool,
     saved: SavedScan,
 }
 
@@ -249,6 +254,7 @@ async fn load_saved_scan(
         let loaded = LoadedScan {
             root: tree.view(0, 0, 0)?,
             errors: tree.errors,
+            has_allocated: tree.has_allocated,
             saved,
         };
         let tree = Arc::new(tree);
@@ -306,9 +312,11 @@ struct ScanError {
 struct Cancelled {}
 
 #[derive(Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
 struct Completed {
     root: scanner::ViewNode,
     errors: u64,
+    has_allocated: bool,
 }
 
 #[tauri::command]
@@ -426,6 +434,7 @@ fn start_scan(
                     let completed = Completed {
                         root,
                         errors: tree.errors,
+                        has_allocated: tree.has_allocated,
                     };
                     let tree = Arc::new(tree);
                     let meta = scan_metadata(&tree);
@@ -722,6 +731,45 @@ async fn get_changes(
     .map_err(|e| e.to_string())?
 }
 #[tauri::command]
+async fn search(
+    node_id: usize,
+    query: String,
+    limit: usize,
+    state: State<'_, AppState>,
+) -> Result<search::Matches, String> {
+    let query: search::Query = query.parse()?;
+    let tree = tree(&state)?;
+    tauri::async_runtime::spawn_blocking(move || tree.search(node_id, &query, limit.min(1000)))
+        .await
+        .map_err(|e| e.to_string())?
+}
+#[tauri::command]
+async fn export_scan(
+    node_id: usize,
+    path: PathBuf,
+    format: String,
+    state: State<'_, AppState>,
+) -> Result<u64, String> {
+    let format = export::Format::parse(&format)?;
+    let tree = tree(&state)?;
+    tauri::async_runtime::spawn_blocking(move || export::export(&tree, node_id, &path, format))
+        .await
+        .map_err(|e| e.to_string())?
+}
+#[tauri::command]
+fn get_trail(node_id: usize, state: State<'_, AppState>) -> Result<Vec<scanner::ViewNode>, String> {
+    let tree = tree(&state)?;
+    tree.node(node_id)?;
+    let mut ids = vec![node_id];
+    while let Some(parent) = tree.nodes[ids[ids.len() - 1]].parent {
+        ids.push(parent);
+    }
+    ids.into_iter()
+        .rev()
+        .map(|id| tree.view(id, 0, 0))
+        .collect()
+}
+#[tauri::command]
 fn get_node_path(node_id: usize, state: State<'_, AppState>) -> Result<String, String> {
     Ok(tree(&state)?.path(node_id)?.to_string_lossy().into_owned())
 }
@@ -822,6 +870,9 @@ pub fn run() {
             get_largest_files,
             get_type_breakdown,
             get_changes,
+            search,
+            export_scan,
+            get_trail,
             get_node_path,
             reveal_in_explorer,
             open_folder

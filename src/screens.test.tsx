@@ -7,20 +7,22 @@ import SettingsMenu from './SettingsMenu';
 import ResultsScreen, { SnapshotBanner } from './ResultsScreen';
 import DeleteDialog from './DeleteDialog';
 import ScanScreen from './ScanScreen';
-import { categories, formatSize, percent, type SavedScan, type TreeNode } from './model';
+import Treemap from './Treemap';
+import { categories, formatSize, percent, type SavedScan, type SearchResults, type TreeNode } from './model';
 import { invoke } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
+import { save } from '@tauri-apps/plugin-dialog';
 import App from './App';
 
 vi.mock('@tauri-apps/api/core', () => ({ invoke: vi.fn() }));
 vi.mock('@tauri-apps/api/event', () => ({ listen: vi.fn() }));
-vi.mock('@tauri-apps/plugin-dialog', () => ({ open: vi.fn() }));
+vi.mock('@tauri-apps/plugin-dialog', () => ({ open: vi.fn(), save: vi.fn() }));
 vi.mock('react', async importOriginal => {
   const actual = await importOriginal<typeof React>();
   return { ...actual, useState: vi.fn(actual.useState), useRef: vi.fn(actual.useRef), useEffect: vi.fn(actual.useEffect) };
 });
 
-const current: TreeNode = { id: 0, name: 'Other', kind: 'dir', size: 10000, files: 2, folders: 1, category: 'apps' };
+const current: TreeNode = { id: 0, name: 'Other', kind: 'dir', size: 10000, allocated: 10000, files: 2, folders: 1, category: 'apps' };
 const longName = `${'long-name-'.repeat(15)}.pbo`;
 const longPath = `${'deeply-nested-folder\\'.repeat(30)}${longName}`;
 const noop = () => {};
@@ -147,6 +149,40 @@ describe('screen details', () => {
     expect(firstScan).not.toContain('removed items');
     expect(firstScan).not.toContain('Grown since');
   });
+  it('shows size on disk in the summary, rows and Not found only when it is known', () => {
+    vi.stubGlobal('window', { devicePixelRatio: 1 });
+    const drive = { mount: 'C:\\', label: 'Disk', total: 100 * gb, free: 60 * gb };
+    const known = { ...props, current: { ...props.current, allocated: 38 * gb }, drive, hasAllocated: true,
+      tree: { ...props.current, allocated: 38 * gb, children: [{ ...current, id: 1, name: 'data', size: 20 * gb, allocated: 38 * gb }] },
+      largest: [{ id: 2, name: 'big.vhdx', relativePath: 'data\\big.vhdx', size: 20 * gb, allocated: 3 * gb, category: 'archives' }] };
+    const html = renderToStaticMarkup(<ResultsScreen {...known} />);
+    expect(html).toContain('Scanned <strong>20 GB</strong></span><span title="Space the files take up on the drive');
+    expect(html).toContain('>· 38 GB on disk</span>');
+    expect(html).toContain('<strong class="row-size" title="38 GB on disk">');
+    expect(html).toContain('<span class="large-size" title="3 GB on disk">');
+    expect(html).toContain('Not found <strong>2 GB</strong>');
+    const unknown = renderToStaticMarkup(<ResultsScreen {...known} hasAllocated={false} />);
+    expect(unknown).not.toContain('on disk');
+    expect(unknown).toContain('<strong class="row-size">');
+    expect(unknown).toContain('Not found <strong>20 GB</strong>');
+  });
+  it('shows size on disk in the treemap tooltip only when it is known', async () => {
+    vi.stubGlobal('window', { devicePixelRatio: 1 });
+    const actual = await vi.importActual<typeof React>('react');
+    const node: TreeNode = { ...current, id: 1, name: 'data', size: 4 * gb, allocated: 3 * gb };
+    const tip = { tile: { node, x: 0, y: 0, width: 10, height: 10, depth: 1, ancestors: [], branch: 1, frame: false }, x: 1, y: 1 };
+    const render = (showAllocated: boolean) => {
+      let calls = 0;
+      vi.mocked(React.useState).mockImplementation(((initial: unknown) => calls++ === 2 ? [tip, noop] : actual.useState(initial)) as typeof React.useState);
+      return renderToStaticMarkup(<Treemap tree={{ ...current, size: 8 * gb }} showAllocated={showAllocated} hover={null} filter={null} onHover={noop} onOpen={noop} onContext={noop} />);
+    };
+    try {
+      expect(render(true)).toContain('<span>4 GB · 50%</span><small>3 GB on disk</small>');
+      expect(render(false)).not.toContain('on disk');
+    } finally {
+      vi.mocked(React.useState).mockImplementation(actual.useState);
+    }
+  });
   it('labels new and unchanged folders', () => {
     const unchanged = renderToStaticMarkup(<ResultsScreen {...props} changes={{ ...changes, previousSize: props.current.size }} />);
     expect(unchanged).toContain('No change since');
@@ -184,13 +220,13 @@ describe('screen details', () => {
         error=""
         loading={false}
         tree={{ ...current, children: [
-          { id: 1, name: longName, kind: 'file', size: 9999, files: 1, folders: 0, category: 'apps' },
-          { id: 2, name: nestedName, kind: 'dir', size: 1, files: 1, folders: 0, category: 'code' },
+          { id: 1, name: longName, kind: 'file', size: 9999, allocated: 12288, files: 1, folders: 0, category: 'apps' },
+          { id: 2, name: nestedName, kind: 'dir', size: 1, allocated: 0, files: 1, folders: 0, category: 'code' },
         ] }}
         hover={null}
         linkedHover={null}
         filter={null}
-        largest={[{ id: 1, name: longName, relativePath: longPath, size: 9999, category: 'apps' }]}
+        largest={[{ id: 1, name: longName, relativePath: longPath, size: 9999, allocated: 12288, category: 'apps' }]}
         breakdown={categories.map(c => ({ category: c.id, bytes: c.id === 'apps' ? 9999 : c.id === 'code' ? 1 : 0, files: c.id === 'apps' || c.id === 'code' ? 1 : 0 }))}
         back={noop}
         up={noop}
@@ -216,10 +252,54 @@ describe('screen details', () => {
     expect(html).toContain(`title="${nestedName}"`);
     expect(html).toContain('class="row-percent">&lt;0.1%');
     expect(html).toContain(`<span class="large-size"><strong>${formatSize(9999)}</strong>`);
+    expect(html).not.toContain('on disk');
     expect(html).toContain(`<small>${percent(9999, 10000)}</small></span>`);
     expect(html).toContain('aria-label="Up one folder (Alt+↑)"');
     expect(html).toContain('role="separator" aria-orientation="horizontal" aria-label="Resize contents and largest files" aria-valuemin="20" aria-valuemax="80" aria-valuenow="48"');
     expect(html).toContain('<aside class="details-panel" style="--contents:48fr;--largest:52fr">');
+  });
+
+  it('replaces Contents and Largest files with search results while a query is active', () => {
+    const search: SearchResults = { total: 1204, results: [
+      { id: 7, name: 'win11.iso', relativePath: 'isos\\win11.iso', kind: 'file', size: 6 * gb, allocated: 5 * gb, category: 'archives' },
+      { id: 8, name: 'isos', relativePath: 'isos', kind: 'dir', size: 6 * gb, allocated: 5 * gb },
+    ] };
+    const html = renderToStaticMarkup(<ResultsScreen {...props} hasAllocated query="iso" search={search} />);
+    expect(html).toContain('<h2>Search</h2><span>1,204 matches, showing largest 2</span>');
+    expect(html).toContain('class="details-panel searching"');
+    expect(html).not.toContain('<h2>Contents</h2>');
+    expect(html).not.toContain('Largest files');
+    expect(html).toContain('title="isos\\win11.iso\nReveal in Explorer"');
+    expect(html).toContain('<strong title="win11.iso">win11.iso</strong><small title="isos\\win11.iso">isos\\win11.iso</small>');
+    expect(html).toContain('<span class="large-size" title="5 GB on disk"><strong>6 GB</strong><small>30%</small></span>');
+    expect(html).toContain('title="isos\nOpen folder"');
+    expect(html).toContain('<strong title="isos">▱ isos</strong>');
+    expect(html).toContain('value="iso"');
+    expect(html).not.toContain('search-error');
+
+    const single = renderToStaticMarkup(<ResultsScreen {...props} query="iso" search={{ total: 1, results: [search.results[0]] }} />);
+    expect(single).toContain('<span>1 match</span>');
+    expect(single).not.toContain('on disk');
+    const empty = renderToStaticMarkup(<ResultsScreen {...props} query="nothing" search={{ total: 0, results: [] }} />);
+    expect(empty).toContain('<span>0 matches</span>');
+    expect(empty).toContain('<p class="quiet-empty">No matches</p>');
+    expect(renderToStaticMarkup(<ResultsScreen {...props} query="iso" />)).toContain('Searching…');
+    const idle = renderToStaticMarkup(<ResultsScreen {...props} query="  " search={search} />);
+    expect(idle).toContain('<h2>Contents</h2>');
+    expect(idle).not.toContain('<h2>Search</h2>');
+  });
+  it('shows search errors inline and hints at the query syntax', () => {
+    const html = renderToStaticMarkup(<ResultsScreen {...props} query="type:movies" searchError={'Unknown type "movies".'} />);
+    expect(html).toContain('aria-invalid="true" aria-describedby="search-error"');
+    expect(html).toContain('<small id="search-error" class="search-error">Unknown type &quot;movies&quot;.</small>');
+    expect(html).not.toContain('Searching…');
+    expect(html).not.toContain('No matches');
+    expect(html).toContain('placeholder="Search… *.iso size&gt;1GB type:video"');
+    expect(html).toMatch(/title="Search everything under this folder[^"]*size&gt;1GB[^"]*type:video[^"]*kind:file[^"]*Ctrl\+F/);
+  });
+  it('renders the export button and its running state', () => {
+    expect(renderToStaticMarkup(<ResultsScreen {...props} />)).toContain('<button title="Save every item in this folder as CSV or JSON">Export…</button>');
+    expect(renderToStaticMarkup(<ResultsScreen {...props} exporting />)).toContain('<button disabled="" title="Save every item in this folder as CSV or JSON">Exporting…</button>');
   });
 
   it('renders used, free and total capacity for a whole-drive scan', () => {
@@ -580,6 +660,7 @@ describe('Explorer scan requests', () => {
       }
       if (command === 'start_scan') return 1;
       if (command === 'get_node_path') return 'D:\\Photos\\Other';
+      if (command === 'get_changes') return null;
       return [];
     });
     function render() {
@@ -683,6 +764,111 @@ describe('Explorer scan requests', () => {
     events.get('scan-requested')!({ payload: 'E:\\' });
     await app.settle();
     expect(invoke).not.toHaveBeenCalledWith('start_scan', { path: 'E:\\' });
+    app.unmount();
+  });
+
+  async function results() {
+    const app = mountApp();
+    await app.settle();
+    events.get('scan-requested')!({ payload: 'D:\\Photos' });
+    await app.settle();
+    events.get('scan-complete')!({ payload: { scanId: 1, root: { ...current, name: 'Photos' } } });
+    await app.settle();
+    const base = vi.mocked(invoke).getMockImplementation()!;
+    return { app, base };
+  }
+
+  it('debounces searches, scopes them to the current folder and shows results or errors', async () => {
+    vi.useFakeTimers();
+    try {
+      const { app, base } = await results();
+      const found: SearchResults = { total: 3, results: [{ id: 4, name: 'a.iso', relativePath: 'a.iso', kind: 'file', size: 9, allocated: 9 }] };
+      vi.mocked(invoke).mockImplementation(async (command, args) => {
+        if (command === 'search') {
+          if ((args as { query: string }).query === 'type:nope') throw 'Unknown type "nope".';
+          return found;
+        }
+        return base(command, args);
+      });
+      app.find(ResultsScreen).props.setQuery!(' *.iso ');
+      await app.settle();
+      expect(invoke).not.toHaveBeenCalledWith('search', expect.anything());
+      vi.advanceTimersByTime(200);
+      await app.settle();
+      expect(invoke).toHaveBeenCalledWith('search', { nodeId: 0, query: '*.iso', limit: 200 });
+      expect(app.find(ResultsScreen).props.search).toEqual(found);
+      expect(app.find(ResultsScreen).props.query).toBe(' *.iso ');
+
+      app.find(ResultsScreen).props.setQuery!('type:nope');
+      await app.settle();
+      expect(app.find(ResultsScreen).props.search).toBeNull();
+      vi.advanceTimersByTime(200);
+      await app.settle();
+      expect(app.find(ResultsScreen).props.searchError).toBe('Unknown type "nope".');
+      expect(app.html()).not.toContain('role="alert"');
+
+      vi.mocked(invoke).mockClear();
+      app.find(ResultsScreen).props.setQuery!('');
+      await app.settle();
+      vi.advanceTimersByTime(200);
+      await app.settle();
+      expect(invoke).not.toHaveBeenCalledWith('search', expect.anything());
+      expect(app.find(ResultsScreen).props.searchError).toBe('');
+      app.unmount();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('opens folder matches through their trail', async () => {
+    const { app, base } = await results();
+    const folder = { ...current, id: 5, name: 'Raw' };
+    const middle = { ...current, id: 3, name: '2024' };
+    vi.mocked(invoke).mockImplementation(async (command, args) => command === 'get_trail' ? [current, middle, folder] : base(command, args));
+    app.find(ResultsScreen).props.openMatch!({ id: 5, name: 'Raw', relativePath: '2024\\Raw', kind: 'dir', size: 1, allocated: 1 });
+    await app.settle();
+    expect(invoke).toHaveBeenCalledWith('get_trail', { nodeId: 5 });
+    expect(app.find(ResultsScreen).props.trail.map(n => n.name)).toEqual(['Other', '2024', 'Raw']);
+    expect(app.find(ResultsScreen).props.history).toHaveLength(1);
+    app.unmount();
+  });
+
+  it('exports the current folder in the format of the chosen file', async () => {
+    const { app, base } = await results();
+    let finish: (items: number) => void = noop;
+    vi.mocked(invoke).mockImplementation((command, args) => command === 'export_scan'
+      ? new Promise(resolve => { finish = resolve; })
+      : base(command, args));
+    vi.mocked(save).mockResolvedValueOnce('D:\\Exports\\Photos.JSON');
+    app.find(ResultsScreen).props.exportScan!();
+    await app.settle();
+    expect(save).toHaveBeenCalledWith(expect.objectContaining({
+      defaultPath: 'Photos.csv',
+      filters: [{ name: 'CSV', extensions: ['csv'] }, { name: 'JSON', extensions: ['json'] }],
+    }));
+    expect(invoke).toHaveBeenCalledWith('export_scan', { nodeId: 0, path: 'D:\\Exports\\Photos.JSON', format: 'json' });
+    expect(app.find(ResultsScreen).props.exporting).toBe(true);
+    finish(12345);
+    await app.settle();
+    expect(app.find(ResultsScreen).props.exporting).toBe(false);
+    expect(app.html()).toContain('Exported 12,345 items to Photos.JSON.');
+
+    vi.mocked(invoke).mockImplementation(async (command, args) => {
+      if (command === 'export_scan') throw 'Could not export to D:\\x.csv: denied';
+      return base(command, args);
+    });
+    vi.mocked(save).mockResolvedValueOnce('D:\\x.csv');
+    app.find(ResultsScreen).props.exportScan!();
+    await app.settle();
+    expect(invoke).toHaveBeenCalledWith('export_scan', { nodeId: 0, path: 'D:\\x.csv', format: 'csv' });
+    expect(app.html()).toContain('role="alert"');
+    expect(app.html()).toContain('Could not export to D:\\x.csv: denied');
+
+    vi.mocked(invoke).mockClear();
+    vi.mocked(save).mockResolvedValueOnce(null);
+    app.find(ResultsScreen).props.exportScan!();
+    await app.settle();
+    expect(invoke).not.toHaveBeenCalledWith('export_scan', expect.anything());
     app.unmount();
   });
 

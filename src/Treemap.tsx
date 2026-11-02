@@ -4,17 +4,28 @@ import { fitLabel, layoutTree, textColor, wrapLabel, type Tile } from './layout'
 
 interface Props {
   tree: TreeNode;
+  showAllocated?: boolean;
   hover: number | null;
   filter: string | null;
+  matches?: { id: number }[] | null;
   onHover: (id: number | null) => void;
   onOpen: (node: TreeNode) => void;
   onContext: (node: TreeNode, x: number, y: number) => void;
 }
 
-export default function Treemap({ tree, hover, filter, onHover, onOpen, onContext }: Props) {
+export default function Treemap({ tree, showAllocated = false, hover, filter, matches = null, onHover, onOpen, onContext }: Props) {
   const canvas = useRef<HTMLCanvasElement>(null);
   const [size, setSize] = useState({ width: 0, height: 0, dpr: window.devicePixelRatio });
   const tiles = useMemo(() => layoutTree(tree, size.width, size.height), [tree, size.width, size.height]);
+  const lit = useMemo(() => {
+    if (!matches) return null;
+    const ids = new Set(matches.map(m => m.id));
+    const lit = new Set<number | null>();
+    for (const tile of tiles) {
+      if (tile.node.id !== null && ids.has(tile.node.id)) tile.ancestors.forEach(id => lit.add(id));
+    }
+    return lit;
+  }, [tiles, matches]);
   const [themeVersion, setThemeVersion] = useState(0);
   const [tip, setTip] = useState<{
     tile: Tile;
@@ -73,7 +84,7 @@ export default function Treemap({ tree, hover, filter, onHover, onOpen, onContex
     for (const tile of tiles) {
       const { x, y, width, height, node, frame } = tile;
       const color = categoryColor(node.category);
-      ctx.globalAlpha = filter && !frame && node.category !== filter ? .16 : 1;
+      ctx.globalAlpha = (filter && !frame && node.category !== filter) || (lit && !lit.has(node.id)) ? .16 : 1;
       ctx.fillStyle = frame ? styles.getPropertyValue('--folder').trim() : color;
       ctx.fillRect(x, y, width, height);
       if (!frame) {
@@ -116,7 +127,7 @@ export default function Treemap({ tree, hover, filter, onHover, onOpen, onContex
         ctx.strokeRect(tile.x + 1, tile.y + 1, tile.width - 2, tile.height - 2);
       }
     }
-  }, [tiles, size, hover, filter, themeVersion]);
+  }, [tiles, size, hover, filter, lit, themeVersion]);
   const hit = (event: React.MouseEvent) => {
     const rect = canvas.current!.getBoundingClientRect();
     const x = event.clientX - rect.left;
@@ -157,11 +168,12 @@ export default function Treemap({ tree, hover, filter, onHover, onOpen, onContex
           className="tooltip"
           style={{
             left: Math.max(4, Math.min(tip.x + 14, size.width - 265)),
-            top: Math.max(4, Math.min(tip.y + 14, size.height - 105)),
+            top: Math.max(4, Math.min(tip.y + 14, size.height - (showAllocated ? 125 : 105))),
           }}
         >
           <strong>{tip.tile.node.name}</strong>
           <span>{formatSize(tip.tile.node.size)} · {percent(tip.tile.node.size, tree.size)}</span>
+          {showAllocated && <small>{formatSize(tip.tile.node.allocated)} on disk</small>}
           <small>
             {count(tip.tile.node.files, 'file')} · {count(tip.tile.node.folders, 'folder')}
           </small>

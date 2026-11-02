@@ -2,7 +2,7 @@ use serde::{Deserialize, Serialize};
 use std::{
     cmp::Reverse,
     collections::BinaryHeap,
-    fs,
+    fs, io,
     path::{Path, PathBuf},
     sync::{
         Mutex, OnceLock,
@@ -65,6 +65,7 @@ pub struct Node {
     pub children: Vec<usize>,
     pub kind: Kind,
     pub size: u64,
+    pub allocated: u64,
     pub files: u64,
     pub folders: u64,
     pub category: Option<u8>,
@@ -77,6 +78,8 @@ pub struct Tree {
     pub errors: u64,
     pub records: Vec<u64>,
     pub checkpoint: Option<JournalCheckpoint>,
+    /// False for trees loaded from saved scans that predate allocated sizes.
+    pub has_allocated: bool,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -187,7 +190,7 @@ fn scan_directory<'scope>(
             });
         }
     };
-    match fs::read_dir(&directory) {
+    match list_directory(&directory) {
         Ok(reader) => {
             for (index, entry) in reader.enumerate() {
                 if cancel.load(Ordering::Relaxed) {
@@ -196,43 +199,25 @@ fn scan_directory<'scope>(
                 if index > 0 && index % 1024 == 0 {
                     flush(&mut entries, &mut counts);
                 }
-                let entry = match entry {
-                    Ok(e) => e,
+                let Entry {
+                    name,
+                    kind,
+                    size,
+                    allocated,
+                } = match entry {
+                    Ok(Some(entry)) => entry,
+                    Ok(None) => continue,
                     Err(_) => {
                         counts.errors += 1;
                         continue;
                     }
                 };
-                #[cfg(windows)]
-                let metadata = entry.metadata();
-                #[cfg(not(windows))]
-                let metadata = fs::symlink_metadata(entry.path());
-                let metadata = match metadata {
-                    Ok(m) => m,
-                    Err(_) => {
-                        counts.errors += 1;
-                        continue;
-                    }
-                };
-                if excluded(&metadata) {
-                    continue;
-                }
-                let kind = if metadata.is_dir() {
-                    Kind::Dir
-                } else if metadata.is_file() {
-                    Kind::File
-                } else {
-                    continue;
-                };
-                let size = if kind == Kind::File {
+                if kind == Kind::File {
                     counts.files += 1;
-                    counts.bytes += metadata.len();
-                    metadata.len()
+                    counts.bytes += size;
                 } else {
                     counts.folders += 1;
-                    0
-                };
-                let name = entry.file_name().to_string_lossy().into_owned();
+                }
                 let category = (kind == Kind::File).then(|| category(&name));
                 entries.push(Node {
                     name,
@@ -240,6 +225,7 @@ fn scan_directory<'scope>(
                     children: vec![],
                     kind,
                     size,
+                    allocated,
                     files: u64::from(kind == Kind::File),
                     folders: 0,
                     category,
@@ -253,6 +239,144 @@ fn scan_directory<'scope>(
 
 pub(crate) fn excluded(metadata: &fs::Metadata) -> bool {
     metadata.file_type().is_symlink()
+}
+
+struct Entry {
+    name: String,
+    kind: Kind,
+    size: u64,
+    allocated: u64,
+}
+
+/// Lists a directory, yielding `None` for entries the scan skips, such as links.
+/// Folders report zero for both sizes.
+#[cfg(not(windows))]
+fn list_directory(directory: &Path) -> io::Result<impl Iterator<Item = io::Result<Option<Entry>>>> {
+    use std::os::unix::fs::MetadataExt;
+
+    Ok(fs::read_dir(directory)?.map(|entry| {
+        let entry = entry?;
+        let metadata = fs::symlink_metadata(entry.path())?;
+        let kind = if excluded(&metadata) {
+            return Ok(None);
+        } else if metadata.is_dir() {
+            Kind::Dir
+        } else if metadata.is_file() {
+            Kind::File
+        } else {
+            return Ok(None);
+        };
+        let file = kind == Kind::File;
+        Ok(Some(Entry {
+            name: entry.file_name().to_string_lossy().into_owned(),
+            kind,
+            size: if file { metadata.len() } else { 0 },
+            allocated: if file { metadata.blocks() * 512 } else { 0 },
+        }))
+    }))
+}
+
+/// Lists a directory in bulk with `FileFullDirectoryInfo`, which carries sizes,
+/// attributes and reparse tags for every entry without opening each file.
+#[cfg(windows)]
+fn list_directory(directory: &Path) -> io::Result<Entries> {
+    use std::os::windows::fs::OpenOptionsExt;
+    use windows_sys::Win32::Storage::FileSystem::{
+        FILE_FLAG_BACKUP_SEMANTICS, FILE_LIST_DIRECTORY,
+    };
+
+    Ok(Entries {
+        directory: fs::OpenOptions::new()
+            .access_mode(FILE_LIST_DIRECTORY)
+            .custom_flags(FILE_FLAG_BACKUP_SEMANTICS)
+            .open(directory)?,
+        buffer: vec![0; 8192],
+        next: None,
+        done: false,
+    })
+}
+
+#[cfg(windows)]
+struct Entries {
+    directory: fs::File,
+    buffer: Vec<u64>,
+    next: Option<usize>,
+    done: bool,
+}
+
+#[cfg(windows)]
+impl Iterator for Entries {
+    type Item = io::Result<Option<Entry>>;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        use std::os::windows::io::AsRawHandle;
+        use windows_sys::Win32::{
+            Foundation::ERROR_NO_MORE_FILES,
+            Storage::FileSystem::{
+                FILE_ATTRIBUTE_DIRECTORY, FILE_ATTRIBUTE_REPARSE_POINT, FILE_FULL_DIR_INFO,
+                FileFullDirectoryInfo, GetFileInformationByHandleEx,
+            },
+        };
+
+        loop {
+            let offset = match self.next {
+                Some(offset) => offset,
+                None if self.done => return None,
+                None => {
+                    // SAFETY: the handle is an open directory and the buffer is writable
+                    // for its full length.
+                    let ok = unsafe {
+                        GetFileInformationByHandleEx(
+                            self.directory.as_raw_handle(),
+                            FileFullDirectoryInfo,
+                            self.buffer.as_mut_ptr().cast(),
+                            (self.buffer.len() * 8) as u32,
+                        )
+                    };
+                    if ok == 0 {
+                        self.done = true;
+                        let error = io::Error::last_os_error();
+                        return (error.raw_os_error() != Some(ERROR_NO_MORE_FILES as i32))
+                            .then_some(Err(error));
+                    }
+                    0
+                }
+            };
+            // SAFETY: the call above filled the buffer with 8-byte aligned entries chained
+            // by NextEntryOffset, each followed by its FileNameLength-byte name.
+            let (info, name) = unsafe {
+                let info = self
+                    .buffer
+                    .as_ptr()
+                    .cast::<u8>()
+                    .add(offset)
+                    .cast::<FILE_FULL_DIR_INFO>();
+                let name = std::slice::from_raw_parts(
+                    (&raw const (*info).FileName).cast::<u16>(),
+                    (*info).FileNameLength as usize / 2,
+                );
+                (&*info, name)
+            };
+            self.next = (info.NextEntryOffset != 0).then(|| offset + info.NextEntryOffset as usize);
+            if name == [u16::from(b'.')] || name == [u16::from(b'.'); 2] {
+                continue;
+            }
+            // Same test as std's is_symlink, so cloud placeholders and dedup files stay.
+            // For reparse points, EaSize holds the reparse tag.
+            if info.FileAttributes & FILE_ATTRIBUTE_REPARSE_POINT != 0
+                && info.EaSize & 0x20000000 != 0
+            {
+                return Some(Ok(None));
+            }
+            let file = info.FileAttributes & FILE_ATTRIBUTE_DIRECTORY == 0;
+            return Some(Ok(Some(Entry {
+                name: String::from_utf16_lossy(name),
+                kind: if file { Kind::File } else { Kind::Dir },
+                size: if file { info.EndOfFile as u64 } else { 0 },
+                allocated: if file { info.AllocationSize as u64 } else { 0 },
+            })));
+        }
+    }
 }
 
 pub fn strip_verbatim_prefix(path: &Path) -> PathBuf {
@@ -368,6 +492,7 @@ fn scan_walk(
             children: vec![],
             kind: Kind::Dir,
             size: 0,
+            allocated: 0,
             files: 0,
             folders: 0,
             category: None,
@@ -376,6 +501,7 @@ fn scan_walk(
         errors: 0,
         records: vec![],
         checkpoint: None,
+        has_allocated: true,
     };
     let nodes = Mutex::new(std::mem::take(&mut tree.nodes));
     rayon::scope(|scope| {
@@ -411,12 +537,14 @@ pub(crate) fn finish(tree: &mut Tree, cancel: &AtomicBool) -> bool {
                 .map(|(index, _)| index as u8);
         }
         if let Some(parent) = tree.nodes[id].parent {
-            let (size, files, folders) = (
+            let (size, allocated, files, folders) = (
                 tree.nodes[id].size,
+                tree.nodes[id].allocated,
                 tree.nodes[id].files,
                 tree.nodes[id].folders + u64::from(tree.nodes[id].kind == Kind::Dir),
             );
             tree.nodes[parent].size += size;
+            tree.nodes[parent].allocated += allocated;
             tree.nodes[parent].files += files;
             tree.nodes[parent].folders += folders;
             for (index, bytes) in category_bytes[id].into_iter().enumerate() {
@@ -445,6 +573,7 @@ pub struct ViewNode {
     pub name: String,
     pub kind: Kind,
     pub size: u64,
+    pub allocated: u64,
     pub files: u64,
     pub folders: u64,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -460,6 +589,7 @@ pub struct LargeFile {
     pub name: String,
     pub relative_path: String,
     pub size: u64,
+    pub allocated: u64,
     pub category: String,
 }
 
@@ -490,8 +620,9 @@ impl Tree {
         let Some(mut parent) = node.parent else {
             return Err("The scan root can't be deleted.".into());
         };
-        let (size, files, folders) = (
+        let (size, allocated, files, folders) = (
             node.size,
+            node.allocated,
             node.files,
             node.folders + u64::from(node.kind == Kind::Dir),
         );
@@ -499,6 +630,7 @@ impl Tree {
         self.nodes[id].parent = None;
         loop {
             self.nodes[parent].size -= size;
+            self.nodes[parent].allocated -= allocated;
             self.nodes[parent].files -= files;
             self.nodes[parent].folders -= folders;
             let Some(ancestor) = self.nodes[parent].parent else {
@@ -562,6 +694,7 @@ impl Tree {
                     name: format!("{} smaller items", rest.len()),
                     kind: Kind::Other,
                     size: rest.iter().map(|i| self.nodes[*i].size).sum(),
+                    allocated: rest.iter().map(|i| self.nodes[*i].allocated).sum(),
                     files: rest.iter().map(|i| self.nodes[*i].files).sum(),
                     folders: rest
                         .iter()
@@ -583,6 +716,7 @@ impl Tree {
             name: node.name.clone(),
             kind: node.kind,
             size: node.size,
+            allocated: node.allocated,
             files: node.files,
             folders: node.folders,
             category: node
@@ -635,6 +769,7 @@ impl Tree {
                 name: n.name.clone(),
                 relative_path,
                 size,
+                allocated: n.allocated,
                 category: n
                     .category
                     .map_or("other", |index| {
@@ -765,15 +900,16 @@ mod tests {
         for (label, tree, elapsed) in [("MFT", &mft, mft_time), ("Directory", &walk, walk_time)] {
             let root = &tree.nodes[0];
             eprintln!(
-                "{label}: {elapsed:?}, files={}, folders={}, size={}, errors={}",
-                root.files, root.folders, root.size, tree.errors
+                "{label}: {elapsed:?}, files={}, folders={}, size={}, allocated={}, errors={}",
+                root.files, root.folders, root.size, root.allocated, tree.errors
             );
         }
         eprintln!(
-            "MFT - directory: files={}, folders={}, size={}, errors={}",
+            "MFT - directory: files={}, folders={}, size={}, allocated={}, errors={}",
             i128::from(mft.nodes[0].files) - i128::from(walk.nodes[0].files),
             i128::from(mft.nodes[0].folders) - i128::from(walk.nodes[0].folders),
             i128::from(mft.nodes[0].size) - i128::from(walk.nodes[0].size),
+            i128::from(mft.nodes[0].allocated) - i128::from(walk.nodes[0].allocated),
             i128::from(mft.errors) - i128::from(walk.errors)
         );
     }
@@ -790,6 +926,7 @@ mod tests {
             children: vec![],
             kind: Kind::Dir,
             size: 0,
+            allocated: 0,
             files: 0,
             folders: 0,
             category: None,

@@ -9,7 +9,7 @@ use std::{
 };
 
 const MAGIC: &[u8; 8] = b"DISKMAP\0";
-pub const FORMAT_VERSION: u32 = 3;
+pub const FORMAT_VERSION: u32 = 4;
 const OPEN_ERROR: &str = "This saved scan can't be opened. Scan again to refresh it.";
 
 #[derive(Serialize, Deserialize)]
@@ -183,7 +183,7 @@ pub fn save(dir: &Path, tree: &Tree, meta: &SavedScan) -> io::Result<()> {
         .map(|(_, &number)| number)
         .collect();
     bincode::serde::encode_into_std_write(
-        (records, tree.checkpoint),
+        (records, tree.checkpoint, tree.has_allocated),
         &mut writer,
         bincode::config::standard(),
     )
@@ -216,6 +216,12 @@ pub fn save(dir: &Path, tree: &Tree, meta: &SavedScan) -> io::Result<()> {
                 folders: node.folders,
                 category: node.category,
             },
+            &mut writer,
+            bincode::config::standard(),
+        )
+        .map_err(io::Error::other)?;
+        bincode::serde::encode_into_std_write(
+            node.allocated,
             &mut writer,
             bincode::config::standard(),
         )
@@ -331,10 +337,13 @@ fn decode(mut bytes: &[u8], version: u32) -> Result<Tree, bincode::error::Decode
     if count > bytes.len() {
         return Err(bincode::error::DecodeError::Other(OPEN_ERROR));
     }
-    let (records, checkpoint) = if version >= 3 {
-        read(&mut bytes)?
-    } else {
-        (vec![], None)
+    let (records, checkpoint, has_allocated) = match version {
+        2 => (vec![], None, false),
+        3 => {
+            let (records, checkpoint) = read(&mut bytes)?;
+            (records, checkpoint, false)
+        }
+        _ => read(&mut bytes)?,
     };
     let mut nodes = Vec::with_capacity(count);
     for _ in 0..count {
@@ -345,12 +354,19 @@ fn decode(mut bytes: &[u8], version: u32) -> Result<Tree, bincode::error::Decode
         {
             return Err(bincode::error::DecodeError::Other(OPEN_ERROR));
         }
+        // Formats before version 4 only stored logical sizes.
+        let allocated = if version >= 4 {
+            read(&mut bytes)?
+        } else {
+            node.size
+        };
         nodes.push(Node {
             name: node.name.into_owned(),
             parent: node.parent,
             children: node.children.into_owned(),
             kind: node.kind,
             size: node.size,
+            allocated,
             files: node.files,
             folders: node.folders,
             category: node.category,
@@ -365,6 +381,7 @@ fn decode(mut bytes: &[u8], version: u32) -> Result<Tree, bincode::error::Decode
         errors,
         records,
         checkpoint,
+        has_allocated,
     })
 }
 
@@ -434,76 +451,106 @@ mod benchmarks {
     use std::{hint::black_box, time::Instant};
 
     #[test]
-    fn version_two_loads_without_incremental_metadata_and_resaves_as_three() {
-        let dir = tempfile::tempdir().unwrap();
-        let tree = crate::scanner::scan(
-            dir.path(),
+    fn versions_two_and_three_load_logical_sizes_and_resave_as_four() {
+        let scanned = tempfile::tempdir().unwrap();
+        fs::write(scanned.path().join("file.bin"), vec![1; 10_000]).unwrap();
+        let mut tree = crate::scanner::scan(
+            scanned.path(),
             None,
             &std::sync::atomic::AtomicBool::new(false),
             |_| {},
         )
         .unwrap()
         .unwrap();
-        let root = &tree.nodes[0];
-        let meta = SavedScan {
-            version: 2,
-            path: tree.root_path.to_string_lossy().into_owned(),
-            scanned_at: 123,
-            size: root.size,
-            files: root.files,
-            folders: root.folders,
-            recycled: 0,
-            deleted: 0,
-            errors: 0,
-            drive_free: None,
-            drive_total: None,
-        };
-        let config = bincode::config::standard();
-        let mut payload =
-            bincode::serde::encode_to_vec((tree.nodes.len(), &tree.root_path, tree.errors), config)
-                .unwrap();
-        for node in &tree.nodes {
-            payload.extend(
-                bincode::serde::encode_to_vec(
-                    DiskNode {
-                        name: Cow::Borrowed(&node.name),
-                        parent: node.parent,
-                        children: Cow::Borrowed(&node.children),
-                        kind: node.kind,
-                        size: node.size,
-                        files: node.files,
-                        folders: node.folders,
-                        category: node.category,
-                    },
-                    config,
-                )
-                .unwrap(),
+        assert!(tree.has_allocated);
+        assert_ne!(tree.nodes[0].allocated, tree.nodes[0].size);
+        tree.records = (0..tree.nodes.len() as u64)
+            .map(|id| if id == 0 { 5 } else { 24 + id })
+            .collect();
+        tree.checkpoint = Some(crate::scanner::JournalCheckpoint {
+            journal_id: 42,
+            next_usn: 1234,
+        });
+        for version in [2, 3] {
+            let dir = tempfile::tempdir().unwrap();
+            let root = &tree.nodes[0];
+            let meta = SavedScan {
+                version,
+                path: tree.root_path.to_string_lossy().into_owned(),
+                scanned_at: 123,
+                size: root.size,
+                files: root.files,
+                folders: root.folders,
+                recycled: 0,
+                deleted: 0,
+                errors: 0,
+                drive_free: None,
+                drive_total: None,
+            };
+            let config = bincode::config::standard();
+            let mut payload = bincode::serde::encode_to_vec(
+                (tree.nodes.len(), &tree.root_path, tree.errors),
+                config,
+            )
+            .unwrap();
+            if version == 3 {
+                payload.extend(
+                    bincode::serde::encode_to_vec((&tree.records, tree.checkpoint), config)
+                        .unwrap(),
+                );
+            }
+            for node in &tree.nodes {
+                payload.extend(
+                    bincode::serde::encode_to_vec(
+                        DiskNode {
+                            name: Cow::Borrowed(&node.name),
+                            parent: node.parent,
+                            children: Cow::Borrowed(&node.children),
+                            kind: node.kind,
+                            size: node.size,
+                            files: node.files,
+                            folders: node.folders,
+                            category: node.category,
+                        },
+                        config,
+                    )
+                    .unwrap(),
+                );
+            }
+            let mut encoded = MAGIC.to_vec();
+            encoded.extend(version.to_le_bytes());
+            encoded.extend(zstd::stream::encode_all(payload.as_slice(), 3).unwrap());
+            let key = key(&meta.path);
+            fs::write(dir.path().join(format!("{key}.tree")), encoded).unwrap();
+            fs::write(
+                dir.path().join(format!("{key}.json")),
+                serde_json::to_vec(&meta).unwrap(),
+            )
+            .unwrap();
+            assert_eq!(list(dir.path()).unwrap(), vec![meta.clone()]);
+            let (loaded, actual) = load(dir.path(), &meta.path).unwrap();
+            assert_eq!(actual, meta);
+            let mut expected = tree.clone();
+            expected.has_allocated = false;
+            for node in &mut expected.nodes {
+                node.allocated = node.size;
+            }
+            if version == 2 {
+                expected.records.clear();
+                expected.checkpoint = None;
+            }
+            assert_eq!(
+                serde_json::to_value(&loaded).unwrap(),
+                serde_json::to_value(&expected).unwrap()
+            );
+            save(dir.path(), &loaded, &meta).unwrap();
+            let (loaded, actual) = load(dir.path(), &meta.path).unwrap();
+            assert_eq!(actual.version, 4);
+            assert_eq!(
+                serde_json::to_value(&loaded).unwrap(),
+                serde_json::to_value(&expected).unwrap()
             );
         }
-        let mut encoded = MAGIC.to_vec();
-        encoded.extend(2_u32.to_le_bytes());
-        encoded.extend(zstd::stream::encode_all(payload.as_slice(), 3).unwrap());
-        let key = key(&meta.path);
-        fs::write(dir.path().join(format!("{key}.tree")), encoded).unwrap();
-        fs::write(
-            dir.path().join(format!("{key}.json")),
-            serde_json::to_vec(&meta).unwrap(),
-        )
-        .unwrap();
-        assert_eq!(list(dir.path()).unwrap(), vec![meta.clone()]);
-        let (loaded, actual) = load(dir.path(), &meta.path).unwrap();
-        assert_eq!(actual, meta);
-        assert!(loaded.records.is_empty());
-        assert_eq!(loaded.checkpoint, None);
-        assert_eq!(
-            serde_json::to_value(&loaded).unwrap(),
-            serde_json::to_value(&tree).unwrap()
-        );
-        save(dir.path(), &loaded, &meta).unwrap();
-        let (loaded, actual) = load(dir.path(), &meta.path).unwrap();
-        assert_eq!(actual.version, 3);
-        assert!(loaded.records.is_empty());
-        assert_eq!(loaded.checkpoint, None);
     }
 
     #[test]
@@ -515,6 +562,7 @@ mod benchmarks {
             errors: 17,
             records: vec![],
             checkpoint: None,
+            has_allocated: true,
         };
         let mut random = 42_u64;
         for id in 0..1_500_000 {
@@ -533,6 +581,7 @@ mod benchmarks {
                 children: vec![],
                 kind: if directory { Kind::Dir } else { Kind::File },
                 size: if directory { 0 } else { random % 100_000_000 },
+                allocated: if directory { 0 } else { random % 100_000_000 },
                 files: u64::from(!directory),
                 folders: 0,
                 category: Some((id % categories().len()) as u8),

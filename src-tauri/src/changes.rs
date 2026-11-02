@@ -32,6 +32,7 @@ pub struct GrownFile {
     pub name: String,
     pub relative_path: String,
     pub size: u64,
+    pub allocated: u64,
     pub previous_size: Option<u64>,
 }
 
@@ -123,6 +124,7 @@ impl Comparison {
                     .to_string_lossy()
                     .into_owned(),
                 size: node.size,
+                allocated: node.allocated,
                 previous_size: self.previous[id],
             });
         }

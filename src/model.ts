@@ -1,9 +1,11 @@
 import categories from './categories.json';
 export { categories };
-export interface TreeNode { id: number | null; name: string; kind: 'dir' | 'file' | 'other'; size: number; files: number; folders: number; category?: string; children?: TreeNode[] }
-export interface LargeFile { id: number; name: string; relativePath: string; size: number; category: string }
-export interface GrownFile { id: number; name: string; relativePath: string; size: number; previousSize: number | null }
+export interface TreeNode { id: number | null; name: string; kind: 'dir' | 'file' | 'other'; size: number; allocated: number; files: number; folders: number; category?: string; children?: TreeNode[] }
+export interface LargeFile { id: number; name: string; relativePath: string; size: number; allocated: number; category: string }
+export interface GrownFile { id: number; name: string; relativePath: string; size: number; allocated: number; previousSize: number | null }
 export interface Changes { since: number; previousSize: number | null; children: { id: number; previousSize: number | null }[]; removed: { items: number; bytes: number }; grown: GrownFile[] }
+export interface SearchMatch { id: number; name: string; relativePath: string; kind: 'dir' | 'file'; size: number; allocated: number; category?: string }
+export interface SearchResults { total: number; results: SearchMatch[] }
 export interface Breakdown { category: string; bytes: number; files: number }
 export interface Drive { mount: string; label: string; total: number; free: number }
 export interface AdminStatus { supported: boolean; elevated: boolean; alwaysElevate: boolean; declined: boolean; contextMenuEnabled: boolean }
