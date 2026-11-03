@@ -1,10 +1,10 @@
 import categories from './categories.json';
 export { categories };
-export interface TreeNode { id: number | null; name: string; kind: 'dir' | 'file' | 'other'; size: number; allocated: number; files: number; folders: number; category?: string; children?: TreeNode[] }
-export interface LargeFile { id: number; name: string; relativePath: string; size: number; allocated: number; category: string }
-export interface GrownFile { id: number; name: string; relativePath: string; size: number; allocated: number; previousSize: number | null }
+export interface TreeNode { id: number | null; name: string; kind: 'dir' | 'file' | 'other'; size: number; allocated: number; modified?: number; files: number; folders: number; category?: string; children?: TreeNode[] }
+export interface LargeFile { id: number; name: string; relativePath: string; size: number; allocated: number; modified?: number; category: string }
+export interface GrownFile { id: number; name: string; relativePath: string; size: number; allocated: number; modified?: number; previousSize: number | null }
 export interface Changes { since: number; previousSize: number | null; children: { id: number; previousSize: number | null }[]; removed: { items: number; bytes: number }; grown: GrownFile[] }
-export interface SearchMatch { id: number; name: string; relativePath: string; kind: 'dir' | 'file'; size: number; allocated: number; category?: string }
+export interface SearchMatch { id: number; name: string; relativePath: string; kind: 'dir' | 'file'; size: number; allocated: number; modified?: number; category?: string }
 export interface SearchResults { total: number; results: SearchMatch[] }
 export interface Breakdown { category: string; bytes: number; files: number }
 export interface Drive { mount: string; label: string; total: number; free: number }
@@ -78,3 +78,23 @@ export function percent(value: number, total: number): string {
   return share < .1 ? '<0.1%' : `${share.toLocaleString('en-GB', { maximumFractionDigits: 1 })}%`;
 }
 export function middlePath(path: string, limit = 100): string { return path.length > limit ? `${path.slice(0, Math.floor(limit * .4))}…${path.slice(-Math.floor(limit * .6))}` : path; }
+
+export interface ExtensionTotal { extension: string; category: string; bytes: number; allocated: number; files: number }
+export type FileSort = 'size' | 'name' | 'modified';
+export interface FilePage { total: number; files: LargeFile[] }
+export function formatDate(ms: number): string {
+  return ms ? new Date(ms).toLocaleDateString('en-GB', { day: 'numeric', month: 'short', year: 'numeric', timeZone: 'UTC' }) : '';
+}
+export const ageBuckets = [
+  { days: 30, label: '<1 month', color: '#3fb68b' },
+  { days: 180, label: '<6 months', color: '#8cc152' },
+  { days: 365, label: '<1 year', color: '#e6c34a' },
+  { days: 730, label: '<2 years', color: '#f08c3c' },
+  { days: 1825, label: '<5 years', color: '#e0533d' },
+  { days: Infinity, label: '5+ years', color: '#a33a6b' },
+  { days: 0, label: 'Unknown', color: '#94a3b5' },
+];
+export function ageColor(modified: number, now = Date.now()): string {
+  if (!modified) return ageBuckets[6].color;
+  return ageBuckets.find(bucket => now - modified < bucket.days * 86400000)!.color;
+}

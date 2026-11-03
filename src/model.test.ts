@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { categories, categoryFor, count, formatAge, formatDelta, formatScanDate, formatSize, isDriveRoot, notFoundByScan, percent, refreshTrails, staleness, type SavedScan, type TreeNode } from './model';
+import { ageBuckets, ageColor, formatDate, categories, categoryFor, count, formatAge, formatDelta, formatScanDate, formatSize, isDriveRoot, notFoundByScan, percent, refreshTrails, staleness, type SavedScan, type TreeNode } from './model';
 import { fitLabel, layoutTree, textColor, wrapLabel } from './layout';
 
 afterEach(() => vi.useRealTimers());
@@ -245,5 +245,26 @@ describe('tile label wrapping', () => {
       const fitted = fitLabel('long-filename.lib', width, measure);
       expect(wrapLabel('long-filename.lib', width, 1, measure)).toEqual(fitted === null ? [] : [fitted]);
     }
+  });
+});
+
+describe('file dates and age colors', () => {
+  const now = Date.UTC(2026, 10, 3);
+  it('formats UTC calendar dates without time and leaves unknown dates empty', () => {
+    expect(formatDate(0)).toBe('');
+    expect(formatDate(Date.UTC(2024, 2, 12, 23, 59))).toBe('12 Mar 2024');
+  });
+  it('uses each age bucket boundary and gives future dates the newest color', () => {
+    expect(ageColor(0, now)).toBe('#94a3b5');
+    expect(ageColor(now + 86400000, now)).toBe('#3fb68b');
+    expect(ageColor(now, now)).toBe('#3fb68b');
+    for (const [i, days] of [30, 180, 365, 730, 1825].entries()) {
+      const boundary = now - days * 86400000;
+      expect(ageColor(boundary + 1, now)).toBe(ageBuckets[i].color);
+      expect(ageColor(boundary, now)).toBe(ageBuckets[i + 1].color);
+    }
+    vi.useFakeTimers();
+    vi.setSystemTime(now);
+    expect(ageColor(now - 2000 * 86400000)).toBe('#a33a6b');
   });
 });

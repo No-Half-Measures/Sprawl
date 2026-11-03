@@ -24,7 +24,7 @@ Sprawl is built with [Tauri 2](https://tauri.app), Rust and React.
   parallel. Drive rescans try to replay the NTFS change journal and only fall
   back to a full read when they can't.
 - **Treemap.** The map shows the current folder three levels deep, coloured by
-  file type, and stays sharp on high-DPI screens. Hover a block for its size,
+  file type or age, and stays sharp on high-DPI screens. Hover a block for its size,
   size on disk and item counts. Click a folder to zoom in. Right-click for
   actions.
 - **Size on disk.** Next to each logical size, Sprawl shows the space the drive
@@ -35,10 +35,15 @@ Sprawl is built with [Tauri 2](https://tauri.app), Rust and React.
   space goes to Video, Images, Audio, Documents, Archives, Code, Apps & system
   and Other. Hover a category to highlight its files in the map.
 - **Search.** Find items under the current folder by name, wildcard, size,
-  type or kind, such as `*.iso size>1GB` or `type:video kind:file`. The side
-  panel lists the largest matches, and the map dims everything else.
+  type, kind or modified date/age, such as `*.iso size>1GB` or `age>1y`.
+  The side panel lists the largest matches, and the map dims everything else.
 - **Export.** Save every file and folder under the current folder, with full
-  paths, sizes, size on disk, item counts and type, as CSV or JSON.
+  paths, sizes, size on disk, last-modified times, item counts and type, as
+  CSV or JSON.
+- **All files and extensions.** Browse every file with filtering, sorting by
+  size, name or modified date, and Show more paging. The Extensions tab shows
+  totals for each extension; click one to search for its files. CLI scan/show
+  reports also include extension totals.
 - **Changes since last scan.** Sprawl saves each completed scan. When you scan
   the same path again, it shows how much each folder grew or shrank, which items
   are new, what disappeared, and the 50 files that grew the most.
@@ -182,12 +187,19 @@ and names ignore case:
 | `size>1GB`, `size<=500MB` | logical size, with `>`, `<`, `>=` or `<=` and B, KB, MB, GB or TB |
 | `type:video` | files of a category: `video`, `images`, `audio`, `documents`, `archives`, `code`, `apps` or `other` |
 | `kind:file`, `kind:dir` | files or folders only |
+| `modified<2025-01-01`, `modified>=2024-06-30` | whole UTC calendar day; >, <, >= or <= (<= includes that day; > starts the next day) |
+| `age>1y`, `age<30d`, `age>=6m` | age relative to now; d = days, w = weeks, m = 30 days, y = 365 days |
 
 The search covers everything under the current folder and follows you as you
-navigate. Click a folder in the results to open it.
+navigate. Click a folder in the results to open it. Files use their last-write
+time; folders use their newest descendant file time. Unknown times never match
+date or age terms. Scans saved before format v5 need a rescan for dates.
 
 **Export.** **Export…** saves the current folder and everything under it as CSV
 or JSON, chosen by the file extension. CSV files are UTF-8 with a header row.
+When dates are available, CSV includes modified times in ISO 8601 UTC (empty
+when unknown); JSON uses Unix milliseconds or null. Older scans omit the CSV
+modified column and use null in JSON.
 
 **Admin mode.** Without admin rights, Sprawl skips folders it can't read and
 uses the slower directory walk. Choose **Restart as administrator** on the home
@@ -223,15 +235,17 @@ To build it yourself, run `cargo build --release --bin sprawl-cli` in
 sprawl-cli scan C:\                     # scan, save, and report
 sprawl-cli show C:\Users\me\AppData     # report from the newest saved scan
 sprawl-cli find C:\ "*.iso size>1GB"    # search the newest saved scan
+sprawl-cli find C:\ "size>1GB age>1y"   # large files untouched for a year
 sprawl-cli export C:\Users --output users.csv   # export a saved scan
 sprawl-cli list                         # list saved scans
 ```
 
 A report covers the path's size, its largest children (`--depth` levels deep,
-`--limit` per folder), its largest files, a type breakdown, and changes since
-the previous scan. It also includes the scan's age, so an agent can tell when
-to rescan. `show` works for any folder inside a saved scan, so one drive scan
-answers questions about every folder on it. `find` takes the same queries as
+`--limit` per folder), its largest files, type and extension breakdowns
+(top `--limit` extensions), and changes since the previous scan. It also includes the scan's age, so an agent can tell when
+to rescan. Reports include `modified` times (Unix milliseconds, 0 when unknown)
+and `scan.hasModified` to indicate date availability. `show` works for any
+folder inside a saved scan, so one drive scan answers questions about every folder on it. `find` takes the same queries as
 the app's search and prints the largest `--limit` matches with full paths and
 the total match count. `export` writes the same CSV or JSON as the app; use
 `--format` or let the `--output` extension decide. The CLI shares saved scans with

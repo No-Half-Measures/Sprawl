@@ -1,10 +1,11 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
-import { categoryColor, count, formatSize, percent, type TreeNode } from './model';
+import { ageColor, categoryColor, count, formatSize, percent, type TreeNode } from './model';
 import { fitLabel, layoutTree, textColor, wrapLabel, type Tile } from './layout';
 
 interface Props {
   tree: TreeNode;
   showAllocated?: boolean;
+  colorBy?: 'type' | 'age';
   hover: number | null;
   filter: string | null;
   matches?: { id: number }[] | null;
@@ -13,7 +14,7 @@ interface Props {
   onContext: (node: TreeNode, x: number, y: number) => void;
 }
 
-export default function Treemap({ tree, showAllocated = false, hover, filter, matches = null, onHover, onOpen, onContext }: Props) {
+export default function Treemap({ tree, showAllocated = false, colorBy = 'type', hover, filter, matches = null, onHover, onOpen, onContext }: Props) {
   const canvas = useRef<HTMLCanvasElement>(null);
   const [size, setSize] = useState({ width: 0, height: 0, dpr: window.devicePixelRatio });
   const tiles = useMemo(() => layoutTree(tree, size.width, size.height), [tree, size.width, size.height]);
@@ -81,9 +82,10 @@ export default function Treemap({ tree, showAllocated = false, hover, filter, ma
     ctx.scale(size.dpr, size.dpr);
     ctx.clearRect(0, 0, size.width, size.height);
     const styles = getComputedStyle(element);
+    const now = Date.now();
     for (const tile of tiles) {
       const { x, y, width, height, node, frame } = tile;
-      const color = categoryColor(node.category);
+      const color = colorBy === 'age' ? ageColor(node.modified ?? 0, now) : categoryColor(node.category);
       ctx.globalAlpha = (filter && !frame && node.category !== filter) || (lit && !lit.has(node.id)) ? .16 : 1;
       ctx.fillStyle = frame ? styles.getPropertyValue('--folder').trim() : color;
       ctx.fillRect(x, y, width, height);
@@ -127,7 +129,7 @@ export default function Treemap({ tree, showAllocated = false, hover, filter, ma
         ctx.strokeRect(tile.x + 1, tile.y + 1, tile.width - 2, tile.height - 2);
       }
     }
-  }, [tiles, size, hover, filter, lit, themeVersion]);
+  }, [tiles, size, hover, filter, lit, themeVersion, colorBy]);
   const hit = (event: React.MouseEvent) => {
     const rect = canvas.current!.getBoundingClientRect();
     const x = event.clientX - rect.left;

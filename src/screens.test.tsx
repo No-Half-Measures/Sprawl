@@ -8,7 +8,8 @@ import ResultsScreen, { SnapshotBanner } from './ResultsScreen';
 import DeleteDialog from './DeleteDialog';
 import ScanScreen from './ScanScreen';
 import Treemap from './Treemap';
-import { categories, formatSize, percent, type SavedScan, type SearchResults, type TreeNode } from './model';
+import FilesPanel, { ExtensionsPanel } from './FilesPanel';
+import { categories, formatSize, percent, type SavedScan, type SearchResults, type TreeNode, type LargeFile, type FilePage } from './model';
 import { invoke } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
 import { save } from '@tauri-apps/plugin-dialog';
@@ -772,11 +773,26 @@ describe('Explorer scan requests', () => {
     await app.settle();
     events.get('scan-requested')!({ payload: 'D:\\Photos' });
     await app.settle();
-    events.get('scan-complete')!({ payload: { scanId: 1, root: { ...current, name: 'Photos' } } });
+    events.get('scan-complete')!({ payload: { scanId: 1, hasModified: true, root: { ...current, name: 'Photos' } } });
     await app.settle();
+    expect(app.find(ResultsScreen).props.hasModified).toBe(true);
     const base = vi.mocked(invoke).getMockImplementation()!;
     return { app, base };
   }
+
+  it('passes date availability through saved scans, including legacy scans', async () => {
+    for (const hasModified of [true, false]) {
+      const app = mountApp();
+      await app.settle();
+      const base = vi.mocked(invoke).getMockImplementation()!;
+      const saved: SavedScan = { version: hasModified ? 5 : 4, path: 'D:', scannedAt: 1, size: current.size, files: current.files, folders: current.folders, errors: 0, driveFree: null, driveTotal: null };
+      vi.mocked(invoke).mockImplementation(async (command, args) => command === 'load_saved_scan' ? { root: current, errors: 0, hasAllocated: true, hasModified, saved } : base(command, args));
+      await app.find(HomeScreen).props.openSaved('D:', 1);
+      await app.settle();
+      expect(app.find(ResultsScreen).props.hasModified).toBe(hasModified);
+      app.unmount();
+    }
+  });
 
   it('debounces searches, scopes them to the current folder and shows results or errors', async () => {
     vi.useFakeTimers();
@@ -895,5 +911,245 @@ describe('Explorer scan requests', () => {
     expect(app.find(SettingsMenu).props.admin.contextMenuEnabled).toBe(true);
     expect(app.html()).toContain('Registry access denied');
     app.unmount();
+  });
+});
+
+
+async function mountPanel<P extends object>(component: (props: P) => ReactNode, initial: P) {
+  const actual = await vi.importActual<typeof React>('react');
+  const values: unknown[] = [];
+  const effects: { deps?: React.DependencyList; run: React.EffectCallback; pending: boolean; cleanup?: () => void }[] = [];
+  let slot = 0, effect = 0;
+  let dirty = true;
+  let props = initial;
+  let screen: ReactNode;
+  vi.mocked(React.useState).mockImplementation((<T,>(initial: T | (() => T)) => {
+    const index = slot++;
+    if (!(index in values)) values[index] = typeof initial === 'function' ? (initial as () => T)() : initial;
+    return [values[index], (next: T | ((value: T) => T)) => {
+      values[index] = typeof next === 'function' ? (next as (value: T) => T)(values[index] as T) : next;
+      dirty = true;
+    }];
+  }) as typeof React.useState);
+  vi.mocked(React.useRef).mockImplementation((<T,>(initial: T) => {
+    const index = slot++;
+    if (!(index in values)) values[index] = { current: initial };
+    return values[index];
+  }) as typeof React.useRef);
+  vi.mocked(React.useEffect).mockImplementation((run, deps) => {
+    const index = effect++;
+    const previous = effects[index];
+    if (!previous || !deps || deps.some((value, i) => !Object.is(value, previous.deps?.[i]))) {
+      previous?.cleanup?.();
+      effects[index] = { run, deps, pending: true };
+    }
+  });
+  vi.stubGlobal('window', { setTimeout, clearTimeout, devicePixelRatio: 1 });
+  function render() {
+    slot = 0; effect = 0; dirty = false;
+    screen = component(props);
+    for (const item of effects) {
+      if (!item.pending) continue;
+      item.pending = false;
+      item.cleanup = item.run() || undefined;
+    }
+  }
+  function all(type: React.ElementType): ReactElement<Record<string, any>>[] {
+    const result: ReactElement<Record<string, any>>[] = [];
+    function walk(node: ReactNode) {
+      for (const child of Children.toArray(node)) {
+        if (!isValidElement<{ children?: ReactNode }>(child)) continue;
+        if (child.type === type) result.push(child as ReactElement<Record<string, any>>);
+        walk(child.props.children);
+      }
+    }
+    walk(screen);
+    return result;
+  }
+  render();
+  return {
+    all,
+    find: (type: React.ElementType, predicate: (props: Record<string, any>) => boolean) => {
+      const found = all(type).find(element => predicate(element.props));
+      expect(found).toBeDefined();
+      return found!;
+    },
+    async settle() { for (let i = 0; i < 40; i++) { await Promise.resolve(); if (dirty) render(); } },
+    update(next: Partial<P>) { props = { ...props, ...next }; render(); },
+    html() {
+      const state = vi.mocked(React.useState).getMockImplementation();
+      const ref = vi.mocked(React.useRef).getMockImplementation();
+      const effect = vi.mocked(React.useEffect).getMockImplementation();
+      vi.mocked(React.useState).mockImplementation(actual.useState);
+      vi.mocked(React.useRef).mockImplementation(actual.useRef);
+      vi.mocked(React.useEffect).mockImplementation(actual.useEffect);
+      try { return renderToStaticMarkup(screen); }
+      finally {
+        vi.mocked(React.useState).mockImplementation(state!);
+        vi.mocked(React.useRef).mockImplementation(ref!);
+        vi.mocked(React.useEffect).mockImplementation(effect!);
+      }
+    },
+    unmount() { effects.forEach(item => item.cleanup?.()); },
+  };
+}
+
+describe('file analysis panels', () => {
+  const file = (id: number): LargeFile => ({ id, name: 'file' + id + '.log', relativePath: 'logs/file' + id + '.log', size: 100, allocated: 128, modified: Date.UTC(2024, 2, 12), category: 'other' });
+  const renderFile = (f: LargeFile) => <button className="large-row" key={f.id}>{f.name}</button>;
+  const props: ComponentProps<typeof ResultsScreen> = { current, trail: [current], history: [], parentSize: undefined, parentName: undefined, scanPath: 'E:', skipped: 0, error: '', loading: false, tree: null, hover: null, linkedHover: null, filter: null, largest: [file(1)], breakdown: [], back: noop, up: noop, navigate: noop, enter: noop, setHover: noop, setFilter: noop, context: noop, action: async () => {} };
+  afterEach(async () => {
+    const actual = await vi.importActual<typeof React>('react');
+    vi.mocked(React.useState).mockImplementation(actual.useState);
+    vi.mocked(React.useRef).mockImplementation(actual.useRef);
+    vi.mocked(React.useEffect).mockImplementation(actual.useEffect);
+    vi.useRealTimers();
+  });
+  it('always shows the three tabs, adds growth when available, and supports arrow navigation', async () => {
+    vi.mocked(invoke).mockReset();
+    const panel = await mountPanel(ResultsScreen, { ...props, tree: current });
+    expect(panel.all('button').filter(b => b.props.role === 'tab').map(b => b.props.children)).toEqual(['Largest files', 'All files', 'Extensions']);
+    expect(invoke).not.toHaveBeenCalled();
+    panel.find('button', p => p.children === 'All files').props.onClick();
+    await panel.settle();
+    expect(panel.all(FilesPanel)).toHaveLength(1);
+    expect(panel.all(ExtensionsPanel)).toHaveLength(0);
+    panel.find('button', p => p.children === 'Extensions').props.onClick();
+    await panel.settle();
+    expect(panel.all(FilesPanel)).toHaveLength(0);
+    expect(panel.all(ExtensionsPanel)).toHaveLength(1);
+    const focus = vi.fn(), preventDefault = vi.fn();
+    panel.find('div', p => p.role === 'tablist').props.onKeyDown({ key: 'Home', preventDefault, currentTarget: { querySelectorAll: () => [{ focus }] } });
+    await panel.settle();
+    expect(focus).toHaveBeenCalled();
+    expect(panel.find('button', p => p.children === 'Largest files').props['aria-selected']).toBe(true);
+    panel.update({ changes: { since: 1, previousSize: 0, children: [], removed: { items: 0, bytes: 0 }, grown: [] } });
+    expect(panel.all('button').filter(b => b.props.role === 'tab')).toHaveLength(4);
+    panel.unmount();
+  });
+  it('fetches 200 files, appends more, and resets when sort or tree changes', async () => {
+    vi.useFakeTimers();
+    vi.mocked(invoke).mockReset().mockImplementation(async (_command, args) => ({ total: 201, files: (args as { offset: number }).offset ? [file(201)] : Array.from({ length: 200 }, (_, i) => file(i + 1)) }));
+    const panel = await mountPanel(FilesPanel, { tree: current, hasModified: true, renderFile });
+    vi.advanceTimersByTime(0); await panel.settle();
+    expect(invoke).toHaveBeenLastCalledWith('get_files', { nodeId: 0, query: '', sort: 'size', descending: true, offset: 0, limit: 200 });
+    expect(panel.html()).toContain('201 files');
+    expect(panel.all('button').filter(b => b.props.className === 'large-row')).toHaveLength(200);
+    panel.find('button', p => p.children === 'Show more').props.onClick(); await panel.settle();
+    expect(invoke).toHaveBeenLastCalledWith('get_files', expect.objectContaining({ offset: 200 }));
+    expect(panel.all('button').filter(b => b.props.className === 'large-row')).toHaveLength(201);
+    expect(panel.html()).not.toContain('Show more');
+    for (const [sort, descending] of [['size', false], ['name', false], ['name', true], ['modified', false], ['modified', true]] as const) {
+      panel.find('button', p => p['aria-pressed'] !== undefined && String(p.children[0]).toLowerCase() === sort).props.onClick();
+      await panel.settle(); vi.advanceTimersByTime(0); await panel.settle();
+      expect(invoke).toHaveBeenLastCalledWith('get_files', expect.objectContaining({ sort, descending, offset: 0 }));
+    }
+    panel.update({ tree: { ...current, id: 7 } });
+    vi.advanceTimersByTime(0); await panel.settle();
+    expect(invoke).toHaveBeenLastCalledWith('get_files', expect.objectContaining({ nodeId: 7, offset: 0 }));
+    panel.unmount();
+  });
+  it('debounces filters, shows parse errors, and ignores stale responses including pages', async () => {
+    vi.useFakeTimers();
+    let finish: (page: FilePage) => void = noop;
+    vi.mocked(invoke).mockReset().mockImplementation(() => new Promise(resolve => { finish = resolve; }));
+    const panel = await mountPanel(FilesPanel, { tree: current, hasModified: false, renderFile });
+    vi.advanceTimersByTime(0); await panel.settle();
+    const stale = finish;
+    expect(panel.html()).not.toContain('Modified');
+    panel.find('input', p => p['aria-label'] === 'Filter all files').props.onChange({ target: { value: 'age>1y' } });
+    await panel.settle();
+    stale({ total: 1, files: [file(99)] }); await panel.settle();
+    expect(panel.html()).not.toContain('file99.log');
+    vi.advanceTimersByTime(199); expect(invoke).toHaveBeenCalledTimes(1);
+    vi.advanceTimersByTime(1); await panel.settle();
+    expect(invoke).toHaveBeenLastCalledWith('get_files', expect.objectContaining({ query: 'age>1y', offset: 0 }));
+    finish({ total: 2, files: [file(1)] }); await panel.settle();
+    panel.find('button', p => p.children === 'Show more').props.onClick(); await panel.settle();
+    const stalePage = finish;
+    vi.mocked(invoke).mockRejectedValueOnce('Invalid date. Use YYYY-MM-DD (UTC).');
+    panel.find('input', p => p['aria-label'] === 'Filter all files').props.onChange({ target: { value: 'modified>bad' } });
+    await panel.settle(); vi.advanceTimersByTime(200); await panel.settle();
+    stalePage({ total: 2, files: [file(88)] }); await panel.settle();
+    expect(panel.html()).toContain('aria-invalid="true" aria-describedby="files-error"');
+    expect(panel.html()).toContain('Invalid date. Use YYYY-MM-DD (UTC).');
+    expect(panel.html()).not.toContain('file88.log');
+    panel.unmount();
+  });
+  it('uses the shared file row for all files, with reveal, hover, context and Delete actions', async () => {
+    const action = vi.fn(async () => {}), context = vi.fn(), setHover = vi.fn();
+    const panel = await mountPanel(ResultsScreen, { ...props, tree: current, hasModified: true, action, context, setHover, linkedHover: 1 });
+    panel.find('button', p => p.children === 'All files').props.onClick(); await panel.settle();
+    const row = panel.all(FilesPanel)[0].props.renderFile(file(1), 0) as ReactElement<React.ComponentProps<'button'>>;
+    expect(row.props.className).toBe('large-row linked-hover');
+    row.props.onClick!({} as React.MouseEvent<HTMLButtonElement>);
+    expect(action).toHaveBeenCalledWith('reveal_in_explorer', expect.objectContaining({ id: 1, kind: 'file' }));
+    row.props.onMouseEnter!({} as React.MouseEvent<HTMLButtonElement>); expect(setHover).toHaveBeenLastCalledWith(1);
+    row.props.onMouseLeave!({} as React.MouseEvent<HTMLButtonElement>); expect(setHover).toHaveBeenLastCalledWith(null);
+    const preventDefault = vi.fn();
+    row.props.onContextMenu!({ preventDefault, clientX: 10, clientY: 20 } as unknown as React.MouseEvent<HTMLButtonElement>);
+    expect(context).toHaveBeenCalledWith(expect.objectContaining({ id: 1 }), 10, 20);
+    row.props.onKeyDown!({ key: 'Delete', preventDefault } as unknown as React.KeyboardEvent<HTMLButtonElement>);
+    expect(action).toHaveBeenLastCalledWith('delete', expect.objectContaining({ id: 1 }));
+    panel.unmount();
+  });
+
+  it('renders extension totals, meters and allocation tooltips, and selects a search', async () => {
+    vi.mocked(invoke).mockReset().mockResolvedValue([{ extension: 'log', category: 'other', bytes: 5000, allocated: 4096, files: 2 }, { extension: '', category: 'other', bytes: 100, allocated: 128, files: 1 }]);
+    const setQuery = vi.fn();
+    const panel = await mountPanel(ExtensionsPanel, { tree: current, hasAllocated: true, setQuery });
+    await panel.settle();
+    expect(invoke).toHaveBeenCalledWith('get_extension_breakdown', { nodeId: 0 });
+    const html = panel.html();
+    expect(html).toContain('.log'); expect(html).toContain('No extension'); expect(html).toContain('2 files');
+    expect(html).toContain('50%'); expect(html).toContain('width:50%'); expect(html).toContain('4 KB on disk');
+    expect(panel.all('button')).toHaveLength(1);
+    panel.all('button')[0].props.onClick(); expect(setQuery).toHaveBeenCalledWith('*.log');
+    panel.update({ tree: { ...current, id: 7 }, hasAllocated: false }); await panel.settle();
+    expect(invoke).toHaveBeenLastCalledWith('get_extension_breakdown', { nodeId: 7 });
+    expect(panel.html()).not.toContain('on disk');
+    panel.unmount();
+  });
+  it('ignores extension results from an earlier folder', async () => {
+    let finish: (rows: unknown[]) => void = noop;
+    vi.mocked(invoke).mockReset().mockImplementation(() => new Promise(resolve => { finish = resolve; }));
+    const panel = await mountPanel(ExtensionsPanel, { tree: current, hasAllocated: false, setQuery: noop });
+    const stale = finish;
+    panel.update({ tree: { ...current, id: 7 } });
+    finish([{ extension: 'new', category: 'other', bytes: 1, allocated: 1, files: 1 }]); await panel.settle();
+    stale([{ extension: 'stale', category: 'other', bytes: 2, allocated: 2, files: 1 }]); await panel.settle();
+    expect(panel.html()).toContain('.new'); expect(panel.html()).not.toContain('.stale');
+    panel.unmount();
+  });
+
+  it('persists age coloring, hides it without dates, and tolerates blocked storage', async () => {
+    const storage = new Map<string, string>();
+    vi.stubGlobal('localStorage', { getItem: (key: string) => storage.get(key), setItem: (key: string, value: string) => storage.set(key, value) });
+    const panel = await mountPanel(ResultsScreen, { ...props, hasModified: true });
+    panel.find('button', p => p.children === 'Age').props.onClick(); await panel.settle();
+    expect(storage.get('sprawl.colorBy')).toBe('age');
+    panel.update({ tree: current });
+    expect(panel.all(Treemap)[0].props.colorBy).toBe('age');
+    expect(panel.html()).toContain('File age legend'); expect(panel.html()).toContain('#a33a6b');
+    expect(panel.html()).not.toContain('Colors show file type');
+    panel.update({ hasModified: false });
+    expect(panel.html()).not.toContain('Map colors'); expect(panel.html()).not.toContain('File age legend');
+    panel.unmount();
+    const restored = await mountPanel(ResultsScreen, { ...props, hasModified: true });
+    expect(restored.find('button', p => p.children === 'Age').props['aria-pressed']).toBe(true);
+    restored.find('button', p => p.children === 'Type').props.onClick(); await restored.settle();
+    expect(storage.get('sprawl.colorBy')).toBe('type'); restored.unmount();
+    vi.stubGlobal('localStorage', { getItem: () => { throw Error('blocked'); }, setItem: () => { throw Error('blocked'); } });
+    const blocked = await mountPanel(ResultsScreen, { ...props, hasModified: true });
+    blocked.find('button', p => p.children === 'Age').props.onClick(); await blocked.settle();
+    expect(blocked.html()).toContain('File age legend'); blocked.unmount();
+  });
+  it('shows dates in file rows and file/folder tooltips only when known', () => {
+    vi.stubGlobal('window', { devicePixelRatio: 1 });
+    const dated = { ...props, hasModified: true, tree: { ...current, children: [{ ...current, id: 1, modified: file(1).modified }, { ...current, id: 2, kind: 'file' as const, modified: file(1).modified }] } };
+    const html = renderToStaticMarkup(<ResultsScreen {...dated} />);
+    expect(html).toContain('Newest file 12 Mar 2024'); expect(html).toContain('Modified 12 Mar 2024');
+    expect(html).toContain('class="dated-path"><span>logs/file1.log</span><span>12 Mar 2024</span>');
+    expect(renderToStaticMarkup(<ResultsScreen {...dated} hasModified={false} />)).not.toContain('12 Mar 2024');
   });
 });

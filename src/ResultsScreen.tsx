@@ -1,10 +1,13 @@
 import { useState, type CSSProperties, type ReactNode, type Ref } from 'react';
 import Treemap from './Treemap';
+import FilesPanel, { ExtensionsPanel } from './FilesPanel';
 import {
+  ageBuckets,
   categories,
   categoryColor,
   count,
   formatAge,
+  formatDate,
   formatDelta,
   formatScanDate,
   formatSize,
@@ -28,6 +31,8 @@ word: name contains word
 size>1GB, size<=500MB: logical size, with >, <, >= or <=
 type:video: file category (${categories.map(c => c.id).join(', ')})
 kind:file or kind:dir
+modified<2025-01-01: last modified UTC day, with >, <, >= or <= (<= includes the whole day)
+age>1y: age, with >, <, >= or <= and d, w, m (30 days), y (365 days)
 Ctrl+F focuses the search. Esc clears it.`;
 
 export function SnapshotBanner({ saved, drive, rescan, now = Date.now() }: { saved: SavedScan; drive?: Drive; rescan: () => void; now?: number }) {
@@ -59,6 +64,7 @@ interface Props {
   scanPath: string;
   skipped: number;
   hasAllocated?: boolean;
+  hasModified?: boolean;
   error: string;
   loading: boolean;
   tree: TreeNode | null;
@@ -100,6 +106,7 @@ export default function ResultsScreen({
   scanPath,
   skipped,
   hasAllocated = false,
+  hasModified = false,
   error,
   loading,
   tree,
@@ -125,7 +132,7 @@ export default function ResultsScreen({
   exporting = false,
   exportScan = () => {},
 }: Props) {
-  const [fileTab, setFileTab] = useState<'largest' | 'grown'>('largest');
+  const [fileTab, setFileTab] = useState<'largest' | 'all' | 'extensions' | 'grown'>('largest');
   const [split, setSplit] = useState(() => {
     try {
       const saved = localStorage.getItem('sprawl.split');
@@ -133,6 +140,14 @@ export default function ResultsScreen({
       return Number.isFinite(value) ? Math.max(20, Math.min(80, value)) : 48;
     } catch { return 48; }
   });
+  const [colorBy, setColorBy] = useState<'type' | 'age'>(() => {
+    try { return localStorage.getItem('sprawl.colorBy') === 'age' ? 'age' : 'type'; } catch { return 'type'; }
+  });
+  const ageMode = hasModified && colorBy === 'age';
+  function changeColorBy(next: 'type' | 'age') {
+    setColorBy(next);
+    try { localStorage.setItem('sprawl.colorBy', next); } catch {}
+  }
   const [dragging, setDragging] = useState(false);
   const updateSplit = (value: number, persist = false) => {
     const next = Math.max(20, Math.min(80, value));
@@ -154,19 +169,23 @@ export default function ResultsScreen({
     + (elevated === false ? ' Run as administrator to include more.' : '');
   const previousSizes = new Map(changes?.children.map(n => [n.id, n.previousSize]));
   const since = changes ? formatScanDate(changes.since) : '';
-  const showGrown = fileTab === 'grown' && !!changes;
+  const activeTab = fileTab === 'grown' && !changes ? 'largest' : fileTab;
+  const tabs = [{ id: 'largest', label: 'Largest files' }, { id: 'all', label: 'All files' }, { id: 'extensions', label: 'Extensions' }, ...(changes ? [{ id: 'grown', label: 'Grown since ' + since }] : [])] as const;
+  const showGrown = activeTab === 'grown' && !!changes;
   const files = showGrown ? changes.grown : largest;
   const searching = query.trim() !== '';
-  const fileRow = (f: { id: number; name: string; relativePath: string; size: number; allocated: number }, i: number, size: ReactNode) => {
+  const fileRow = (f: { id: number; name: string; relativePath: string; size: number; allocated: number; modified?: number }, i: number, size: ReactNode) => {
     const node: TreeNode = { ...f, kind: 'file', files: 1, folders: 0 };
     return (
       <button
         key={f.id}
-        className="large-row"
+        className={'large-row' + (linkedHover === f.id ? ' linked-hover' : '')}
         title={`${f.relativePath}\nReveal in Explorer`}
         onClick={() => void action('reveal_in_explorer', node)}
         onMouseEnter={() => setHover(f.id)}
         onMouseLeave={() => setHover(null)}
+        onFocus={() => setHover(f.id)}
+        onBlur={() => setHover(null)}
         onContextMenu={e => {
           e.preventDefault();
           context(node, e.clientX, e.clientY);
@@ -186,14 +205,18 @@ export default function ResultsScreen({
         <span className="rank">{i + 1}</span>
         <span className="large-name">
           <strong title={f.name}>{f.name}</strong>
-          <small title={f.relativePath}>{f.relativePath}</small>
+          <small title={f.relativePath} className={hasModified && f.modified ? 'dated-path' : undefined}>
+            {hasModified && f.modified ? <><span>{f.relativePath}</span><span>{formatDate(f.modified)}</span></> : f.relativePath}
+          </small>
         </span>
         {size}
       </button>
     );
   };
-  const sizeCell = (f: { size: number; allocated: number }) => (
-    <span className="large-size" title={onDisk(f.allocated)}><strong>{formatSize(f.size)}</strong><small>{percent(f.size, current.size)}</small></span>
+  const modifiedTitle = (node: { modified?: number; kind?: string }) => hasModified && node.modified ? (node.kind === 'dir' ? 'Newest file ' : 'Modified ') + formatDate(node.modified) : undefined;
+  const sizeTitle = (node: { allocated: number; modified?: number; kind?: string }) => [onDisk(node.allocated), modifiedTitle(node)].filter(Boolean).join('\n') || undefined;
+  const sizeCell = (f: { size: number; allocated: number; modified?: number; kind?: string }) => (
+    <span className="large-size" title={sizeTitle(f)}><strong>{formatSize(f.size)}</strong><small>{percent(f.size, current.size)}</small></span>
   );
   const currentPath = trail.length > 1
     ? `${scanPath.replace(/[\\/]$/, '')}\\${trail.slice(1).map(n => n.name).join('\\')}`
@@ -297,12 +320,17 @@ export default function ResultsScreen({
         <section className="map-panel">
           <div className="section-heading">
             <h2>Space map</h2>
-            <span>{loading ? 'Loading folder…' : 'Bigger blocks use more space · Colors show file type · Click a folder to zoom in'}</span>
+            {hasModified && <div className="color-toggle" role="group" aria-label="Map colors">
+              <button aria-pressed={!ageMode} onClick={() => changeColorBy('type')}>Type</button>
+              <button aria-pressed={ageMode} onClick={() => changeColorBy('age')}>Age</button>
+            </div>}
+            {ageMode ? <div className="age-legend" aria-label="File age legend">{ageBuckets.map(bucket => <span key={bucket.label}><i style={{ background: bucket.color }} />{bucket.label}</span>)}</div> : <span>{loading ? 'Loading folder…' : 'Bigger blocks use more space · Colors show file type · Click a folder to zoom in'}</span>}
           </div>
           {tree && !loading && tree.id === current.id && tree.size > 0 ? (
             <Treemap
               tree={tree}
               showAllocated={hasAllocated}
+              colorBy={ageMode ? 'age' : 'type'}
               hover={hover}
               filter={filter}
               matches={searching ? search?.results : null}
@@ -378,7 +406,7 @@ export default function ResultsScreen({
                 return (
                 <button
                   key={n.id ?? `other-${i}`}
-                  title={n.name}
+                  title={[n.name, modifiedTitle(n)].filter(Boolean).join('\n')}
                   className={`content-row ${linkedHover !== null && linkedHover === n.id ? 'linked-hover' : ''}`}
                   onClick={() => enter(n)}
                   onMouseEnter={() => setHover(n.id)}
@@ -423,7 +451,7 @@ export default function ResultsScreen({
                         ? count(n.files, 'file')
                         : categories.find(c => c.id === n.category)?.label}
                     </span>
-                    <strong className="row-size" title={onDisk(n.allocated)}>
+                    <strong className="row-size" title={sizeTitle(n)}>
                       {previous !== undefined && (previous === null || Math.abs(delta) >= 1024 ** 2) && (
                         <small className={`delta ${delta < 0 ? 'shrink' : 'growth'}`}>{previous === null ? 'New' : formatDelta(delta)}</small>
                       )}
@@ -503,21 +531,27 @@ export default function ResultsScreen({
           />
           <section className="largest-panel">
             <div className="section-heading">
-              {changes ? (
-                <div className="file-tabs" role="tablist" aria-label="File ranking">
-                  <button role="tab" aria-selected={!showGrown} onClick={() => setFileTab('largest')}>Largest files</button>
-                  <button role="tab" aria-selected={showGrown} onClick={() => setFileTab('grown')}>Grown since {since}</button>
-                </div>
-              ) : <h2>Largest files</h2>}
-              <span>Top {files.length} in this folder</span>
+              <div className="file-tabs" role="tablist" aria-label="File ranking" onKeyDown={e => {
+                const index = tabs.findIndex(tab => tab.id === activeTab);
+                const next = e.key === 'ArrowRight' ? (index + 1) % tabs.length : e.key === 'ArrowLeft' ? (index + tabs.length - 1) % tabs.length : e.key === 'Home' ? 0 : e.key === 'End' ? tabs.length - 1 : null;
+                if (next === null) return;
+                e.preventDefault();
+                setFileTab(tabs[next].id as typeof fileTab);
+                e.currentTarget.querySelectorAll<HTMLButtonElement>('[role="tab"]')[next]?.focus();
+              }}>
+                {tabs.map(tab => <button key={tab.id} id={'file-tab-' + tab.id} role="tab" aria-controls="file-panel" tabIndex={activeTab === tab.id ? 0 : -1} aria-selected={activeTab === tab.id} onClick={() => setFileTab(tab.id as typeof fileTab)}>{tab.label}</button>)}
+              </div>
+              {(activeTab === 'largest' || showGrown) && <span>Top {files.length} in this folder</span>}
             </div>
-            <div className="largest-scroll">
-              {!loading && files.map((f, i) => fileRow(f, i, showGrown && 'previousSize' in f ? (
-                <span className="large-size"><strong className="delta growth">{formatDelta(f.size - (f.previousSize ?? 0))}</strong><small>{f.previousSize === null ? 'New' : `was ${formatSize(f.previousSize)}`}</small></span>
-              ) : sizeCell(f)))}
-              {!loading && !files.length && (
-                <p className="quiet-empty">{showGrown ? `No files grew since ${since}.` : 'No files found.'}</p>
-              )}
+            <div id="file-panel" role="tabpanel" aria-labelledby={'file-tab-' + activeTab} className="file-panel">
+              {!loading && tree && tree.id === current.id && activeTab === 'all' ? <FilesPanel tree={tree} hasModified={hasModified} renderFile={(file, i) => fileRow(file, i, sizeCell(file))} />
+                : !loading && tree && tree.id === current.id && activeTab === 'extensions' ? <ExtensionsPanel tree={tree} hasAllocated={hasAllocated} setQuery={setQuery} />
+                : (activeTab === 'largest' || showGrown) && <div className="largest-scroll">
+                  {!loading && files.map((f, i) => fileRow(f, i, showGrown && 'previousSize' in f ? (
+                    <span className="large-size" title={sizeTitle(f)}><strong className="delta growth">{formatDelta(f.size - (f.previousSize ?? 0))}</strong><small>{f.previousSize === null ? 'New' : 'was ' + formatSize(f.previousSize)}</small></span>
+                  ) : sizeCell(f)))}
+                  {!loading && !files.length && <p className="quiet-empty">{showGrown ? 'No files grew since ' + since + '.' : 'No files found.'}</p>}
+                </div>}
             </div>
           </section>
           </>}

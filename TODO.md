@@ -17,12 +17,12 @@ DaisyDisk) have and Sprawl lacks, most valuable first.
 
 ## Medium priority
 
-- [ ] **Breakdown by extension.** List every extension with its total size and
+- [x] **Breakdown by extension.** List every extension with its total size and
       file count, alongside the 8 categories.
-- [ ] **Dates.** Store last-modified times, then filter or colour by file age
+- [x] **Dates.** Store last-modified times, then filter or colour by file age
       to find big files nobody has touched in a year. Changes the saved-scan
       format, so it needs a migration. Shares that work with size on disk.
-- [ ] **Flat file list.** A sorted, searchable list of every file in the scan.
+- [x] **Flat file list.** A sorted, searchable list of every file in the scan.
       The largest-files list currently stops at 50 in the UI and 1,000 in the
       backend.
 

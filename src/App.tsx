@@ -30,6 +30,7 @@ type ScanMessage = {
   scanId: number;
   root?: TreeNode;
   hasAllocated?: boolean;
+  hasModified?: boolean;
   message?: string;
 } & Partial<Progress>;
 type Menu = {
@@ -62,6 +63,7 @@ export default function App() {
   const [progress, setProgress] = useState<Progress>(emptyProgress);
   const [skipped, setSkipped] = useState(0);
   const [hasAllocated, setHasAllocated] = useState(false);
+  const [hasModified, setHasModified] = useState(false);
   const [trail, setTrail] = useState<TreeNode[]>([]);
   const [history, setHistory] = useState<TreeNode[][]>([]);
   const [tree, setTree] = useState<TreeNode | null>(null);
@@ -131,6 +133,7 @@ export default function App() {
       if (!message.root) return;
       setSkipped(message.errors ?? 0);
       setHasAllocated(message.hasAllocated ?? false);
+      setHasModified(message.hasModified ?? false);
       setTrail([message.root]);
       setHistory([]);
       setPhase('results');
@@ -306,13 +309,14 @@ export default function App() {
     setError('');
     setNotice('');
     try {
-      const loaded = await invoke<{ root: TreeNode; errors: number; hasAllocated: boolean; saved: SavedScan }>('load_saved_scan', { path, scannedAt });
+      const loaded = await invoke<{ root: TreeNode; errors: number; hasAllocated: boolean; hasModified: boolean; saved: SavedScan }>('load_saved_scan', { path, scannedAt });
       setScanPath(loaded.saved.path);
       setSnapshot(loaded.saved);
       setRecycled(loaded.saved.recycled ?? 0);
       setDeleted(loaded.saved.deleted ?? 0);
       setSkipped(loaded.errors);
       setHasAllocated(loaded.hasAllocated);
+      setHasModified(loaded.hasModified ?? false);
       setTrail([loaded.root]);
       setHistory([]);
       setCancelling(false);
@@ -637,6 +641,7 @@ export default function App() {
           scanPath={scanPath}
           skipped={skipped}
           hasAllocated={hasAllocated}
+          hasModified={hasModified}
           snapshot={snapshot}
           recycled={recycled}
           deleted={deleted}
