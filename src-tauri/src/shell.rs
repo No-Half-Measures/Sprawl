@@ -56,10 +56,7 @@ mod windows {
 
     const KEYS: [(&str, bool); 3] = [
         (r"Software\Classes\Directory\shell\Sprawl", false),
-        (
-            r"Software\Classes\Directory\Background\shell\Sprawl",
-            true,
-        ),
+        (r"Software\Classes\Directory\Background\shell\Sprawl", true),
         (r"Software\Classes\Drive\shell\Sprawl", false),
     ];
 
