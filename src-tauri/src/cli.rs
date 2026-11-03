@@ -37,7 +37,7 @@ Usage:
 
 Options:
   --depth N   Folder levels to list below <path> (default 1, max 8)
-  --limit N   Items per folder, largest files, grown files and search
+  --limit N   Items per folder, extensions, largest files, grown files and search
               results (default 20)
   --output F  File to export to
   --format X  csv or json (default from the --output extension, else csv)
@@ -50,6 +50,9 @@ Search queries match names without case; every term must match:
   type:video    file category: video, images, audio, documents, archives,
                 code, apps or other
   kind:file     files only, or kind:dir for folders
+  modified<2025-01-01  last modified UTC day, with >, <, >= or <=
+                      (<= includes the whole day; > starts the next day)
+  age>1y        age, with >, <, >= or <= and d, w, m (30 days), y (365 days)
 
 Sizes are in bytes and times are Unix milliseconds. Saved scans are shared
 with the Sprawl app. Run elevated to read whole NTFS drives from the master
@@ -214,6 +217,7 @@ pub(crate) struct FoundItem {
     pub kind: Kind,
     pub size: u64,
     pub allocated: u64,
+    pub modified: u64,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub category: Option<String>,
 }
@@ -235,6 +239,7 @@ pub(crate) fn find(dir: &Path, path: &Path, query: &str, limit: usize) -> Result
                 kind: m.kind,
                 size: m.size,
                 allocated: m.allocated,
+                modified: m.modified,
                 category: m.category,
             })
             .collect(),
@@ -337,6 +342,7 @@ pub(crate) struct Report {
     pub kind: Kind,
     pub size: u64,
     pub allocated: u64,
+    pub modified: u64,
     pub files: u64,
     pub folders: u64,
     pub scan: ScanInfo,
@@ -346,6 +352,7 @@ pub(crate) struct Report {
     pub children: Vec<Item>,
     pub largest_files: Vec<FileEntry>,
     pub types: Vec<Breakdown>,
+    pub extensions: Vec<scanner::ExtensionTotal>,
     pub changes: Option<ChangeSummary>,
 }
 
@@ -358,6 +365,7 @@ pub(crate) struct ScanInfo {
     pub errors: u64,
     /// False for scans saved before allocated sizes existed; `allocated` then equals `size`.
     pub allocated_known: bool,
+    pub has_modified: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub elevated: Option<bool>,
 }
@@ -369,6 +377,7 @@ pub(crate) struct Item {
     pub kind: Kind,
     pub size: u64,
     pub allocated: u64,
+    pub modified: u64,
     pub files: u64,
     pub folders: u64,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -385,6 +394,7 @@ pub(crate) struct FileEntry {
     pub path: String,
     pub size: u64,
     pub allocated: u64,
+    pub modified: u64,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub category: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -416,6 +426,7 @@ fn item(node: ViewNode, comparison: Option<&Comparison>) -> Item {
         kind: node.kind,
         size: node.size,
         allocated: node.allocated,
+        modified: node.modified,
         files: node.files,
         folders: node.folders,
     }
@@ -452,6 +463,7 @@ fn report(
                         path: base.join(f.relative_path).to_string_lossy().into_owned(),
                         size: f.size,
                         allocated: f.allocated,
+                        modified: f.modified,
                         category: None,
                         previous_size: f.previous_size,
                     })
@@ -470,6 +482,7 @@ fn report(
         kind: node.kind,
         size: node.size,
         allocated: node.allocated,
+        modified: node.modified,
         files: node.files,
         folders: node.folders,
         scan: scan_info(tree, meta),
@@ -484,11 +497,13 @@ fn report(
                 path: base.join(f.relative_path).to_string_lossy().into_owned(),
                 size: f.size,
                 allocated: f.allocated,
+                modified: f.modified,
                 category: Some(f.category),
                 previous_size: None,
             })
             .collect(),
         types,
+        extensions: tree.extensions(id)?.into_iter().take(limit).collect(),
         changes,
     })
 }
@@ -500,6 +515,7 @@ fn scan_info(tree: &Tree, meta: &SavedScan) -> ScanInfo {
         age_seconds: now().saturating_sub(meta.scanned_at) / 1000,
         errors: meta.errors,
         allocated_known: tree.has_allocated,
+        has_modified: tree.has_modified,
         elevated: None,
     }
 }

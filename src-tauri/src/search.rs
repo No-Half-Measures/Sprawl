@@ -7,6 +7,8 @@ enum Term {
     Contains(String),
     Wildcard(Vec<char>),
     Size(Compare, u64),
+    Modified(Compare, i64),
+    Age(Compare, u64, u64),
     Category(u8),
     Kind(Kind),
 }
@@ -29,12 +31,24 @@ impl std::str::FromStr for Query {
     type Err = String;
 
     fn from_str(text: &str) -> Result<Self, String> {
+        Self::parse(
+            text,
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_millis() as u64,
+        )
+    }
+}
+
+impl Query {
+    pub fn parse(text: &str, now_ms: u64) -> Result<Self, String> {
         let mut terms = vec![];
         for (token, quoted) in tokens(text)? {
             terms.push(if quoted {
                 name_term(&token)
             } else {
-                term(&token)?
+                term(&token, now_ms)?
             });
         }
         // Check the cheap numeric terms before comparing names.
@@ -86,8 +100,49 @@ fn name_term(token: &str) -> Term {
     }
 }
 
-fn term(token: &str) -> Result<Term, String> {
+fn term(token: &str, now_ms: u64) -> Result<Term, String> {
     let lower = token.to_lowercase();
+    for prefix in ["modified", "age"] {
+        if let Some(rest) = lower.strip_prefix(prefix)
+            && rest.starts_with(['<', '>', '='])
+        {
+            let (compare, value) = comparison(rest).ok_or_else(|| {
+                format!("Invalid {prefix} filter \"{token}\". Use >, <, >= or <=.")
+            })?;
+            return if prefix == "modified" {
+                crate::dates::parse(value)
+                    .map(|ms| match compare {
+                        Compare::AtMost => Term::Modified(Compare::Less, ms + 86_400_000),
+                        Compare::Greater => Term::Modified(Compare::AtLeast, ms + 86_400_000),
+                        _ => Term::Modified(compare, ms),
+                    })
+                    .ok_or_else(|| format!("Invalid date \"{value}\". Use YYYY-MM-DD (UTC)."))
+            } else {
+                let duration = value.len().checked_sub(1).and_then(|end| {
+                    if !value.is_char_boundary(end) {
+                        return None;
+                    }
+                    let days: u64 = match &value[end..] {
+                        "d" => 1,
+                        "w" => 7,
+                        "m" => 30,
+                        "y" => 365,
+                        _ => return None,
+                    };
+                    value[..end]
+                        .parse::<u64>()
+                        .ok()?
+                        .checked_mul(days)?
+                        .checked_mul(86_400_000)
+                });
+                duration
+                    .map(|ms| Term::Age(compare, ms, now_ms))
+                    .ok_or_else(|| {
+                        format!("Invalid age \"{value}\". Use a whole number with d, w, m or y.")
+                    })
+            };
+        }
+    }
     if let Some(id) = lower.strip_prefix("type:") {
         return categories()
             .iter()
@@ -180,9 +235,19 @@ fn wildcard(pattern: &[char], name: &str) -> bool {
 }
 
 impl Query {
-    fn matches(&self, node: &crate::scanner::Node, lower: &mut String) -> bool {
+    pub(crate) fn matches(&self, node: &crate::scanner::Node, lower: &mut String) -> bool {
         let mut lowered = false;
         self.terms.iter().all(|term| match term {
+            Term::Modified(compare, ms) => {
+                node.modified != 0 && compare.matches(i128::from(node.modified), i128::from(*ms))
+            }
+            Term::Age(compare, ms, now) => {
+                node.modified != 0
+                    && compare.matches(
+                        i128::from(*now) - i128::from(node.modified),
+                        i128::from(*ms),
+                    )
+            }
             Term::Kind(kind) => node.kind == *kind,
             Term::Category(index) => node.kind == Kind::File && node.category == Some(*index),
             Term::Size(Compare::Greater, bytes) => node.size > *bytes,
@@ -219,6 +284,7 @@ pub struct Match {
     pub kind: Kind,
     pub size: u64,
     pub allocated: u64,
+    pub modified: u64,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub category: Option<String>,
 }
@@ -262,6 +328,7 @@ impl Tree {
                     kind: node.kind,
                     size: node.size,
                     allocated: node.allocated,
+                    modified: node.modified,
                     category: (node.kind == Kind::File)
                         .then_some(node.category)
                         .flatten()
@@ -277,7 +344,7 @@ impl Tree {
         Ok(Matches { total, results })
     }
 
-    fn relative_path(&self, base: usize, id: usize) -> String {
+    pub(crate) fn relative_path(&self, base: usize, id: usize) -> String {
         let mut parts = vec![];
         let mut current = id;
         while current != base {
@@ -290,6 +357,30 @@ impl Tree {
             .collect::<PathBuf>()
             .to_string_lossy()
             .into_owned()
+    }
+}
+
+fn comparison(rest: &str) -> Option<(Compare, &str)> {
+    for (op, compare) in [
+        (">=", Compare::AtLeast),
+        ("<=", Compare::AtMost),
+        (">", Compare::Greater),
+        ("<", Compare::Less),
+    ] {
+        if let Some(value) = rest.strip_prefix(op) {
+            return Some((compare, value));
+        }
+    }
+    None
+}
+impl Compare {
+    fn matches(self, a: i128, b: i128) -> bool {
+        match self {
+            Self::Greater => a > b,
+            Self::Less => a < b,
+            Self::AtLeast => a >= b,
+            Self::AtMost => a <= b,
+        }
     }
 }
 
@@ -377,5 +468,86 @@ mod tests {
         assert!(matches("ü?é*", "üxé"));
         assert!(!matches("?", ""));
         assert!(matches("*", ""));
+    }
+}
+
+#[cfg(test)]
+mod date_tests {
+    use super::*;
+    #[test]
+    fn date_and_age_filters_handle_boundaries_unknown_and_future() {
+        let ms = crate::dates::parse("2025-01-01").unwrap() as u64;
+        let mut node = crate::scanner::Node {
+            name: "test".into(),
+            parent: None,
+            children: vec![],
+            kind: Kind::File,
+            size: 1,
+            allocated: 1,
+            modified: ms,
+            files: 1,
+            folders: 0,
+            category: None,
+        };
+        for (text, expected) in [
+            ("modified>=2025-01-01", true),
+            ("modified<=2025-01-01", true),
+            ("modified>2025-01-01", false),
+            ("modified<2025-01-01", false),
+            ("modified>2024-12-31", true),
+            ("modified<=2024-12-31", false),
+            ("age>=1d", true),
+            ("age>1d", false),
+            ("age<1w", true),
+            ("age<=1m", true),
+            ("age>1y", false),
+        ] {
+            let q = Query::parse(text, ms + 86_400_000).unwrap();
+            assert_eq!(q.matches(&node, &mut String::new()), expected, "{text}");
+            node.modified = 0;
+            assert!(!q.matches(&node, &mut String::new()));
+            node.modified = ms;
+        }
+        node.modified = ms + 86_400_000 - 1;
+        assert!(
+            Query::parse("modified<=2025-01-01", ms)
+                .unwrap()
+                .matches(&node, &mut String::new())
+        );
+        assert!(
+            !Query::parse("modified>2025-01-01", ms)
+                .unwrap()
+                .matches(&node, &mut String::new())
+        );
+        node.modified += 1;
+        assert!(
+            !Query::parse("modified<=2025-01-01", ms)
+                .unwrap()
+                .matches(&node, &mut String::new())
+        );
+        assert!(
+            Query::parse("modified>2025-01-01", ms)
+                .unwrap()
+                .matches(&node, &mut String::new())
+        );
+        node.modified = ms;
+        assert!(
+            Query::parse("age<1d", ms - 1)
+                .unwrap()
+                .matches(&node, &mut String::new())
+        );
+        for text in [
+            "modified=2025-01-01",
+            "modified>2025-02-29",
+            "modified>",
+            "age=1d",
+            "age>1",
+            "age>-1d",
+            "age>1.5d",
+            "age>18446744073709551615y",
+            "age>\u{e9}",
+        ] {
+            assert!(Query::parse(text, ms).is_err(), "{text}");
+        }
     }
 }

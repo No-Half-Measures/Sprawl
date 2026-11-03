@@ -158,12 +158,14 @@ fn saved_scan_round_trip() {
     assert_eq!(loaded.root_path, tree.root_path);
     assert_eq!(loaded.errors, tree.errors);
     assert!(loaded.has_allocated);
+    assert!(loaded.has_modified);
     for (actual, expected) in loaded.nodes.iter().zip(&tree.nodes) {
         assert_eq!(actual.name, expected.name);
         assert_eq!(actual.parent, expected.parent);
         assert_eq!(actual.children, expected.children);
         assert_eq!(actual.kind, expected.kind);
         assert_eq!(actual.size, expected.size);
+        assert_eq!(actual.modified, expected.modified);
         assert_eq!(actual.allocated, expected.allocated);
         assert_eq!(actual.files, expected.files);
         assert_eq!(actual.folders, expected.folders);
@@ -660,6 +662,7 @@ fn comparison_tree(entries: &[(&str, usize, Kind, u64)]) -> Tree {
             kind: Kind::Dir,
             size: 0,
             allocated: 0,
+            modified: 0,
             files: 0,
             folders: 0,
             category: None,
@@ -669,6 +672,7 @@ fn comparison_tree(entries: &[(&str, usize, Kind, u64)]) -> Tree {
         records: vec![],
         checkpoint: None,
         has_allocated: true,
+        has_modified: true,
     };
     for &(name, parent, kind, size) in entries {
         let id = tree.nodes.len();
@@ -679,6 +683,7 @@ fn comparison_tree(entries: &[(&str, usize, Kind, u64)]) -> Tree {
             kind,
             size,
             allocated: size * 2,
+            modified: 0,
             files: u64::from(kind == Kind::File),
             folders: 0,
             category: None,
@@ -904,7 +909,37 @@ fn corrupt_saved_payloads_fail_cleanly() {
         let mut bytes = fs::read(&path).unwrap();
         let mut payload = zstd::stream::decode_all(&bytes[12..]).unwrap();
         match fault {
-            "category index" => *payload.last_mut().unwrap() = u8::MAX,
+            "category index" => {
+                let config = bincode::config::standard();
+                let (_, header) = bincode::serde::decode_from_slice::<
+                    (
+                        usize,
+                        std::path::PathBuf,
+                        u64,
+                        Vec<u64>,
+                        Option<scanner::JournalCheckpoint>,
+                        bool,
+                        bool,
+                    ),
+                    _,
+                >(&payload, config)
+                .unwrap();
+                let (_, node) = bincode::serde::decode_from_slice::<
+                    (
+                        String,
+                        Option<usize>,
+                        Vec<usize>,
+                        Kind,
+                        u64,
+                        u64,
+                        u64,
+                        Option<u8>,
+                    ),
+                    _,
+                >(&payload[header..], config)
+                .unwrap();
+                payload[header + node - 1] = u8::MAX;
+            }
             "trailing bytes" => payload.push(0),
             _ => payload[0] = 0,
         }
@@ -1322,18 +1357,22 @@ fn completed_and_loaded_payloads_report_allocated_sizes() {
         root: root.clone(),
         errors: 0,
         has_allocated: true,
+        has_modified: true,
     })
     .unwrap();
     assert_eq!(completed["hasAllocated"], true);
+    assert_eq!(completed["hasModified"], true);
     assert_eq!(completed["root"]["allocated"], tree.nodes[0].allocated);
     let loaded = serde_json::to_value(crate::LoadedScan {
         root,
         errors: 0,
         has_allocated: false,
+        has_modified: false,
         saved: saved(&tree, 1),
     })
     .unwrap();
     assert_eq!(loaded["hasAllocated"], false);
+    assert_eq!(loaded["hasModified"], false);
 }
 
 #[test]
@@ -1394,6 +1433,7 @@ fn total_response_budget_preserves_each_folders_size() {
             kind: Kind::Dir,
             size: 100,
             allocated: 100,
+            modified: 0,
             files: 100,
             folders: 0,
             category: None,
@@ -1408,6 +1448,7 @@ fn total_response_budget_preserves_each_folders_size() {
                 kind: Kind::File,
                 size: 1,
                 allocated: 1,
+                modified: 0,
                 files: 1,
                 folders: 0,
                 category: Some(scanner::category("file")),
@@ -1477,8 +1518,7 @@ fn links_are_not_followed() {
 #[test]
 #[ignore = "manual real-directory smoke scan"]
 fn smoke_real_directory() {
-    let path =
-        std::env::var("SPRAWL_SMOKE_PATH").unwrap_or_else(|_| r"C:\Windows\System32".into());
+    let path = std::env::var("SPRAWL_SMOKE_PATH").unwrap_or_else(|_| r"C:\Windows\System32".into());
     let start = Instant::now();
     let tree = scanner::scan(Path::new(&path), None, &AtomicBool::new(false), |_| {})
         .unwrap()
@@ -1544,6 +1584,23 @@ fn cli_shows_saved_subfolders_with_changes() {
     assert_eq!(report.size, 105);
     assert_eq!(report.scan.scanned_at, 2);
     assert!(report.scan.allocated_known);
+    assert!(report.scan.has_modified);
+    assert!(report.modified > 0);
+    assert_eq!(
+        report
+            .extensions
+            .iter()
+            .map(|r| r.extension.as_str())
+            .collect::<Vec<_>>(),
+        ["rs", "txt"]
+    );
+    assert_eq!(
+        crate::cli::show(dir.path(), &nested, 1, 1)
+            .unwrap()
+            .extensions
+            .len(),
+        1
+    );
     assert_eq!(
         report.allocated,
         report.children.iter().map(|c| c.allocated).sum::<u64>()
@@ -1667,26 +1724,37 @@ fn export_csv_has_bom_header_and_quotes_fields() {
     let file = tree.nodes[folder].children[0];
     let video = tree.nodes[0].children[1];
     let allocated = |id: usize| tree.nodes[id].allocated;
+    let modified = |id: usize| crate::dates::format(tree.nodes[id].modified);
     let (count, text) = export_text(&tree, 0, crate::export::Format::Csv);
     assert_eq!(count, 4);
     let lines: Vec<_> = text.split("\r\n").collect();
     assert_eq!(
         lines,
         [
-            "\u{feff}path,kind,size,allocated,files,folders,category".to_string(),
-            format!("{root},dir,10,{},2,1,", allocated(0)),
-            format!("\"{root}{sep}a,b\",dir,7,{},1,0,", allocated(folder)),
+            "\u{feff}path,kind,size,allocated,modified,files,folders,category".to_string(),
+            format!("{root},dir,10,{},{},2,1,", allocated(0), modified(0)),
             format!(
-                "\"{root}{sep}a,b{sep}say, hi.txt\",file,7,{},1,0,documents",
-                allocated(file)
+                "\"{root}{sep}a,b\",dir,7,{},{},1,0,",
+                allocated(folder),
+                modified(folder)
             ),
-            format!("{root}{sep}plain.mp4,file,3,{},1,0,video", allocated(video)),
+            format!(
+                "\"{root}{sep}a,b{sep}say, hi.txt\",file,7,{},{},1,0,documents",
+                allocated(file),
+                modified(file)
+            ),
+            format!(
+                "{root}{sep}plain.mp4,file,3,{},{},1,0,video",
+                allocated(video),
+                modified(video)
+            ),
             String::new(),
         ]
     );
 
     let mut old = tree.clone();
     old.has_allocated = false;
+    old.has_modified = false;
     let (_, text) = export_text(&old, folder, crate::export::Format::Csv);
     let lines: Vec<_> = text.split("\r\n").collect();
     assert_eq!(lines[0], "\u{feff}path,kind,size,files,folders,category");
@@ -1791,6 +1859,19 @@ fn cli_finds_and_exports_from_saved_scans() {
     );
     assert_eq!(found.results[0].category.as_deref(), Some("video"));
     assert_eq!(found.scan.scanned_at, 1);
+    assert!(found.scan.has_modified);
+    assert!(found.results[0].modified > 0);
+    assert_eq!(
+        crate::cli::find(
+            dir.path(),
+            root.path(),
+            "kind:file modified>=1970-01-01",
+            20
+        )
+        .unwrap()
+        .total,
+        3
+    );
     let nested = crate::cli::find(dir.path(), &root.path().join("nested"), "*.rs", 20).unwrap();
     assert_eq!(nested.total, 1);
     assert!(Path::new(&nested.results[0].path).ends_with("nested/code.rs"));
@@ -1848,4 +1929,171 @@ fn smoke_search_real_directory() {
         "EXPORT {count} items: {:.1} ms",
         start.elapsed().as_secs_f64() * 1000.0
     );
+}
+
+#[test]
+fn dates_roll_up_remove_and_export_unknown_values() {
+    let (_dir, mut tree) = fixture();
+    assert!(tree.has_modified);
+    let file = tree.nodes.iter().position(|n| n.name == "code.rs").unwrap();
+    let empty = tree.nodes.iter().position(|n| n.name == "empty").unwrap();
+    assert_eq!(tree.nodes[empty].modified, 0);
+    assert!(tree.nodes[file].modified > 0);
+    let newest = tree.nodes[0].modified;
+    assert_eq!(
+        newest,
+        tree.nodes
+            .iter()
+            .filter(|n| n.kind == Kind::File)
+            .map(|n| n.modified)
+            .max()
+            .unwrap()
+    );
+    for node in &mut tree.nodes {
+        node.modified = 0;
+    }
+    let ms =
+        crate::dates::parse("2025-01-31").unwrap() as u64 + (12 * 3600 + 34 * 60 + 56) * 1000 + 789;
+    tree.nodes[file].modified = ms;
+    let parent = tree.nodes[file].parent.unwrap();
+    tree.nodes[parent].modified = ms;
+    tree.nodes[0].modified = ms;
+    let (_, csv) = export_text(&tree, 0, crate::export::Format::Csv);
+    assert!(csv.contains("2025-01-31T12:34:56Z"));
+    assert!(csv.contains("dir,0,0,,0,0,"));
+    let (_, json) = export_text(&tree, 0, crate::export::Format::Json);
+    let rows: Vec<serde_json::Value> = serde_json::from_str(&json).unwrap();
+    assert_eq!(rows[0]["modified"], ms);
+    assert!(rows.iter().any(|r| r["modified"].is_null()));
+    tree.remove(file).unwrap();
+    assert_eq!(tree.nodes[parent].modified, 0);
+    assert_eq!(tree.nodes[0].modified, 0);
+    let query = crate::search::Query::parse("age>1d", u64::MAX).unwrap();
+    assert_eq!(tree.search(0, &query, 50).unwrap().total, 0);
+}
+
+#[test]
+fn extensions_group_names_and_scope_totals() {
+    let (dir, _) = fixture();
+    fs::write(dir.path().join("other.mp4"), [0; 5]).unwrap();
+    fs::write(dir.path().join("README"), [0; 2]).unwrap();
+    fs::write(dir.path().join(".gitignore"), [0; 3]).unwrap();
+    let tree = scanner::scan(dir.path(), None, &AtomicBool::new(false), |_| {})
+        .unwrap()
+        .unwrap();
+    let rows = tree.extensions(0).unwrap();
+    assert_eq!(
+        rows.iter()
+            .map(|r| r.extension.as_str())
+            .collect::<Vec<_>>(),
+        ["mp4", "rs", "txt", ""]
+    );
+    assert_eq!(
+        (rows[0].bytes, rows[0].files, rows[0].category.as_str()),
+        (105, 2, "video")
+    );
+    assert_eq!(
+        (rows[3].bytes, rows[3].files, rows[3].category.as_str()),
+        (5, 2, "other")
+    );
+    assert_eq!(
+        rows.iter().map(|r| r.allocated).sum::<u64>(),
+        tree.nodes[0].allocated
+    );
+    let nested = tree.nodes.iter().position(|n| n.name == "nested").unwrap();
+    assert_eq!(tree.extensions(nested).unwrap().len(), 1);
+    assert!(tree.extensions(usize::MAX).is_err());
+}
+
+#[test]
+fn files_sort_filter_and_page() {
+    use scanner::FileSort;
+    let (_dir, mut tree) = fixture();
+    let query: crate::search::Query = "".parse().unwrap();
+    let ids = tree.files(0, &query, FileSort::Size, true).unwrap();
+    assert_eq!(
+        ids.iter().map(|&i| tree.nodes[i].size).collect::<Vec<_>>(),
+        [100, 40, 10]
+    );
+    let names = |ids: Vec<usize>| {
+        ids.into_iter()
+            .map(|i| tree.nodes[i].name.clone())
+            .collect::<Vec<_>>()
+    };
+    assert_eq!(
+        names(tree.files(0, &query, FileSort::Name, false).unwrap()),
+        ["code.rs", "large.MP4", "small.txt"]
+    );
+    assert_eq!(
+        names(tree.files(0, &query, FileSort::Name, true).unwrap()),
+        ["small.txt", "large.MP4", "code.rs"]
+    );
+    tree.nodes[ids[0]].modified = 100;
+    tree.nodes[ids[1]].modified = 200;
+    tree.nodes[ids[2]].modified = 200;
+    assert_eq!(
+        tree.files(0, &query, FileSort::Modified, true).unwrap(),
+        [ids[1], ids[2], ids[0]]
+    );
+    assert_eq!(
+        tree.files(0, &query, FileSort::Modified, false).unwrap(),
+        ids
+    );
+    let filtered: crate::search::Query = "size>=40 kind:file".parse().unwrap();
+    assert_eq!(
+        tree.files(0, &filtered, FileSort::Size, false).unwrap(),
+        [ids[1], ids[0]]
+    );
+    let page = tree.file_page(0, &ids, 1, 1);
+    assert_eq!(
+        (page.total, page.files.len(), page.files[0].id),
+        (3, 1, ids[1])
+    );
+    assert!(page.files[0].relative_path.ends_with("code.rs"));
+    assert!(
+        tree.file_page(0, &ids, usize::MAX, usize::MAX)
+            .files
+            .is_empty()
+    );
+    assert!(tree.file_page(0, &ids, 0, 0).files.is_empty());
+    assert_eq!(
+        tree.file_page(0, &vec![ids[0]; 1001], 0, usize::MAX)
+            .files
+            .len(),
+        1000
+    );
+    tree.nodes[ids[0]].name = "Z".into();
+    tree.nodes[ids[1]].name = "a".into();
+    tree.nodes[ids[2]].name = "A".into();
+    for &id in &ids {
+        tree.nodes[id].size = 10;
+    }
+    assert_eq!(
+        tree.files(0, &query, FileSort::Name, false).unwrap(),
+        [ids[2], ids[1], ids[0]]
+    );
+    assert_eq!(
+        tree.files(0, &query, FileSort::Size, true).unwrap(),
+        [ids[2], ids[0], ids[1]]
+    );
+    tree.nodes[ids[0]].name = "z".into();
+    tree.nodes[ids[1]].name = "A".into();
+    tree.nodes[ids[2]].name = "m".into();
+    assert_eq!(
+        tree.files(0, &query, FileSort::Size, true).unwrap(),
+        [ids[1], ids[2], ids[0]]
+    );
+    for &id in &ids {
+        tree.nodes[id].name = "same".into();
+        tree.nodes[id].modified = 200;
+    }
+    let mut by_id = ids.clone();
+    by_id.sort_unstable();
+    for sort in [FileSort::Size, FileSort::Name, FileSort::Modified] {
+        assert_eq!(tree.files(0, &query, sort, true).unwrap(), by_id);
+        assert_eq!(tree.files(0, &query, sort, false).unwrap(), by_id);
+    }
+    tree.remove(ids[1]).unwrap();
+    assert_eq!(tree.file_page(0, &ids, 0, 100).files.len(), 2);
+    assert!(FileSort::parse("unknown").is_err());
 }

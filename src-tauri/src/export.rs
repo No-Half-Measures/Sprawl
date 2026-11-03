@@ -39,6 +39,7 @@ struct Row<'a> {
     kind: Kind,
     size: u64,
     allocated: Option<u64>,
+    modified: Option<u64>,
     files: u64,
     folders: u64,
     category: Option<&'a str>,
@@ -81,6 +82,9 @@ fn write(
             if tree.has_allocated {
                 out.write_all(b"allocated,")?;
             }
+            if tree.has_modified {
+                out.write_all(b"modified,")?;
+            }
             out.write_all(b"files,folders,category\r\n")?;
         }
         Format::Json => out.write_all(b"[")?,
@@ -106,6 +110,7 @@ fn write(
             kind: node.kind,
             size: node.size,
             allocated: tree.has_allocated.then_some(node.allocated),
+            modified: (tree.has_modified && node.modified != 0).then_some(node.modified),
             files: node.files,
             folders: node.folders,
             category: (node.kind == Kind::File)
@@ -119,6 +124,12 @@ fn write(
                 write!(out, ",{},{},", kind(row.kind), row.size)?;
                 if let Some(allocated) = row.allocated {
                     write!(out, "{allocated},")?;
+                }
+                if tree.has_modified {
+                    if let Some(ms) = row.modified {
+                        out.write_all(crate::dates::format(ms).as_bytes())?;
+                    }
+                    out.write_all(b",")?;
                 }
                 write!(out, "{},{},", row.files, row.folders)?;
                 csv_field(out, row.category.unwrap_or_default())?;

@@ -66,6 +66,7 @@ pub struct Node {
     pub kind: Kind,
     pub size: u64,
     pub allocated: u64,
+    pub modified: u64,
     pub files: u64,
     pub folders: u64,
     pub category: Option<u8>,
@@ -80,6 +81,7 @@ pub struct Tree {
     pub checkpoint: Option<JournalCheckpoint>,
     /// False for trees loaded from saved scans that predate allocated sizes.
     pub has_allocated: bool,
+    pub has_modified: bool,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -204,6 +206,7 @@ fn scan_directory<'scope>(
                     kind,
                     size,
                     allocated,
+                    modified,
                 } = match entry {
                     Ok(Some(entry)) => entry,
                     Ok(None) => continue,
@@ -226,6 +229,7 @@ fn scan_directory<'scope>(
                     kind,
                     size,
                     allocated,
+                    modified,
                     files: u64::from(kind == Kind::File),
                     folders: 0,
                     category,
@@ -246,6 +250,7 @@ struct Entry {
     kind: Kind,
     size: u64,
     allocated: u64,
+    modified: u64,
 }
 
 /// Lists a directory, yielding `None` for entries the scan skips, such as links.
@@ -272,6 +277,15 @@ fn list_directory(directory: &Path) -> io::Result<impl Iterator<Item = io::Resul
             kind,
             size: if file { metadata.len() } else { 0 },
             allocated: if file { metadata.blocks() * 512 } else { 0 },
+            modified: if file {
+                metadata
+                    .modified()
+                    .ok()
+                    .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+                    .map_or(0, |d| d.as_millis() as u64)
+            } else {
+                0
+            },
         }))
     }))
 }
@@ -374,6 +388,11 @@ impl Iterator for Entries {
                 kind: if file { Kind::File } else { Kind::Dir },
                 size: if file { info.EndOfFile as u64 } else { 0 },
                 allocated: if file { info.AllocationSize as u64 } else { 0 },
+                modified: if file && info.LastWriteTime > 0 {
+                    filetime_ms(info.LastWriteTime as u64)
+                } else {
+                    0
+                },
             })));
         }
     }
@@ -493,6 +512,7 @@ fn scan_walk(
             kind: Kind::Dir,
             size: 0,
             allocated: 0,
+            modified: 0,
             files: 0,
             folders: 0,
             category: None,
@@ -502,6 +522,7 @@ fn scan_walk(
         records: vec![],
         checkpoint: None,
         has_allocated: true,
+        has_modified: true,
     };
     let nodes = Mutex::new(std::mem::take(&mut tree.nodes));
     rayon::scope(|scope| {
@@ -545,6 +566,7 @@ pub(crate) fn finish(tree: &mut Tree, cancel: &AtomicBool) -> bool {
             );
             tree.nodes[parent].size += size;
             tree.nodes[parent].allocated += allocated;
+            tree.nodes[parent].modified = tree.nodes[parent].modified.max(tree.nodes[id].modified);
             tree.nodes[parent].files += files;
             tree.nodes[parent].folders += folders;
             for (index, bytes) in category_bytes[id].into_iter().enumerate() {
@@ -574,6 +596,7 @@ pub struct ViewNode {
     pub kind: Kind,
     pub size: u64,
     pub allocated: u64,
+    pub modified: u64,
     pub files: u64,
     pub folders: u64,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -590,6 +613,7 @@ pub struct LargeFile {
     pub relative_path: String,
     pub size: u64,
     pub allocated: u64,
+    pub modified: u64,
     pub category: String,
 }
 
@@ -631,6 +655,12 @@ impl Tree {
         loop {
             self.nodes[parent].size -= size;
             self.nodes[parent].allocated -= allocated;
+            self.nodes[parent].modified = self.nodes[parent]
+                .children
+                .iter()
+                .map(|&i| self.nodes[i].modified)
+                .max()
+                .unwrap_or(0);
             self.nodes[parent].files -= files;
             self.nodes[parent].folders -= folders;
             let Some(ancestor) = self.nodes[parent].parent else {
@@ -695,6 +725,11 @@ impl Tree {
                     kind: Kind::Other,
                     size: rest.iter().map(|i| self.nodes[*i].size).sum(),
                     allocated: rest.iter().map(|i| self.nodes[*i].allocated).sum(),
+                    modified: rest
+                        .iter()
+                        .map(|i| self.nodes[*i].modified)
+                        .max()
+                        .unwrap_or(0),
                     files: rest.iter().map(|i| self.nodes[*i].files).sum(),
                     folders: rest
                         .iter()
@@ -717,6 +752,7 @@ impl Tree {
             kind: node.kind,
             size: node.size,
             allocated: node.allocated,
+            modified: node.modified,
             files: node.files,
             folders: node.folders,
             category: node
@@ -770,6 +806,7 @@ impl Tree {
                 relative_path,
                 size,
                 allocated: n.allocated,
+                modified: n.modified,
                 category: n
                     .category
                     .map_or("other", |index| {
@@ -807,6 +844,155 @@ impl Tree {
     }
 }
 
+pub(crate) fn filetime_ms(ticks: u64) -> u64 {
+    ticks.saturating_sub(116_444_736_000_000_000) / 10_000
+}
+
+#[derive(Clone, Debug, Serialize)]
+pub struct ExtensionTotal {
+    pub extension: String,
+    pub category: String,
+    pub bytes: u64,
+    pub allocated: u64,
+    pub files: u64,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum FileSort {
+    Size,
+    Name,
+    Modified,
+}
+impl FileSort {
+    pub fn parse(text: &str) -> Result<Self, String> {
+        match text {
+            "size" => Ok(Self::Size),
+            "name" => Ok(Self::Name),
+            "modified" => Ok(Self::Modified),
+            _ => Err(format!(
+                "Unknown file sort \"{text}\". Use size, name or modified."
+            )),
+        }
+    }
+}
+
+#[derive(Serialize)]
+pub struct FilePage {
+    pub total: usize,
+    pub files: Vec<LargeFile>,
+}
+
+impl Tree {
+    pub fn extensions(&self, id: usize) -> Result<Vec<ExtensionTotal>, String> {
+        let mut totals = std::collections::HashMap::<String, ExtensionTotal>::new();
+        self.visit(id, |_, node| {
+            if node.kind != Kind::File {
+                return;
+            }
+            let extension = Path::new(&node.name)
+                .extension()
+                .and_then(|s| s.to_str())
+                .unwrap_or_default()
+                .to_lowercase();
+            let row = totals
+                .entry(extension.clone())
+                .or_insert_with(|| ExtensionTotal {
+                    category: categories()[usize::from(category(&node.name))].id.clone(),
+                    extension,
+                    bytes: 0,
+                    allocated: 0,
+                    files: 0,
+                });
+            row.bytes += node.size;
+            row.allocated += node.allocated;
+            row.files += 1;
+        })?;
+        let mut rows: Vec<_> = totals.into_values().collect();
+        rows.sort_unstable_by(|a, b| {
+            b.bytes
+                .cmp(&a.bytes)
+                .then_with(|| a.extension.cmp(&b.extension))
+        });
+        Ok(rows)
+    }
+
+    pub fn files(
+        &self,
+        id: usize,
+        query: &crate::search::Query,
+        sort: FileSort,
+        descending: bool,
+    ) -> Result<Vec<usize>, String> {
+        let mut rows = vec![];
+        let mut lower = String::new();
+        self.visit(id, |i, node| {
+            if node.kind == Kind::File && query.matches(node, &mut lower) {
+                rows.push(i);
+            }
+        })?;
+        let names: Vec<_> = if sort == FileSort::Name {
+            rows.iter()
+                .map(|&i| self.nodes[i].name.to_lowercase())
+                .collect()
+        } else {
+            vec![]
+        };
+        let mut order: Vec<_> = (0..rows.len()).collect();
+        order.sort_unstable_by(|&a, &b| {
+            let na = &self.nodes[rows[a]];
+            let nb = &self.nodes[rows[b]];
+            let primary = match sort {
+                FileSort::Size => na.size.cmp(&nb.size),
+                FileSort::Name => names[a].cmp(&names[b]),
+                FileSort::Modified => na.modified.cmp(&nb.modified),
+            };
+            let primary = if descending {
+                primary.reverse()
+            } else {
+                primary
+            };
+            primary
+                .then_with(|| {
+                    if sort == FileSort::Modified {
+                        nb.size.cmp(&na.size)
+                    } else {
+                        std::cmp::Ordering::Equal
+                    }
+                })
+                .then_with(|| na.name.cmp(&nb.name))
+                .then_with(|| rows[a].cmp(&rows[b]))
+        });
+        Ok(order.into_iter().map(|i| rows[i]).collect())
+    }
+
+    pub fn file_page(&self, base: usize, ids: &[usize], offset: usize, limit: usize) -> FilePage {
+        let files = ids
+            .iter()
+            .skip(offset)
+            .take(limit.min(1000))
+            .filter_map(|&id| {
+                let node = self.node(id).ok()?;
+                (node.kind == Kind::File).then(|| LargeFile {
+                    id,
+                    name: node.name.clone(),
+                    relative_path: self.relative_path(base, id),
+                    size: node.size,
+                    allocated: node.allocated,
+                    modified: node.modified,
+                    category: categories()
+                        [usize::from(node.category.unwrap_or(category(&node.name)))]
+                    .id
+                    .clone(),
+                })
+            })
+            .collect();
+        FilePage {
+            total: ids.len(),
+            files,
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -833,9 +1019,8 @@ mod tests {
     #[test]
     #[ignore = "Scans a whole drive then replays its journal; run elevated with --nocapture"]
     fn incremental_matches_full_scan() {
-        let root_path = PathBuf::from(
-            std::env::var_os("SPRAWL_MFT_DRIVE").unwrap_or_else(|| r"C:\".into()),
-        );
+        let root_path =
+            PathBuf::from(std::env::var_os("SPRAWL_MFT_DRIVE").unwrap_or_else(|| r"C:\".into()));
         let cancel = AtomicBool::new(false);
         let start = Instant::now();
         let full = crate::mft::scan_volume(&root_path, &cancel, &|_| {})
@@ -880,9 +1065,8 @@ mod tests {
     #[test]
     #[ignore = "Scans a whole drive twice; run elevated with --nocapture"]
     fn mft_matches_directory_scan() {
-        let path = PathBuf::from(
-            std::env::var_os("SPRAWL_MFT_DRIVE").unwrap_or_else(|| r"C:\".into()),
-        );
+        let path =
+            PathBuf::from(std::env::var_os("SPRAWL_MFT_DRIVE").unwrap_or_else(|| r"C:\".into()));
         let root_path = strip_verbatim_prefix(&fs::canonicalize(&path).unwrap());
         assert!(
             drive_letter(&root_path).is_some(),
@@ -927,6 +1111,7 @@ mod tests {
             kind: Kind::Dir,
             size: 0,
             allocated: 0,
+            modified: 0,
             files: 0,
             folders: 0,
             category: None,

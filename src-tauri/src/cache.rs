@@ -9,7 +9,7 @@ use std::{
 };
 
 const MAGIC: &[u8; 8] = b"DISKMAP\0";
-pub const FORMAT_VERSION: u32 = 4;
+pub const FORMAT_VERSION: u32 = 5;
 const OPEN_ERROR: &str = "This saved scan can't be opened. Scan again to refresh it.";
 
 #[derive(Serialize, Deserialize)]
@@ -183,7 +183,12 @@ pub fn save(dir: &Path, tree: &Tree, meta: &SavedScan) -> io::Result<()> {
         .map(|(_, &number)| number)
         .collect();
     bincode::serde::encode_into_std_write(
-        (records, tree.checkpoint, tree.has_allocated),
+        (
+            records,
+            tree.checkpoint,
+            tree.has_allocated,
+            tree.has_modified,
+        ),
         &mut writer,
         bincode::config::standard(),
     )
@@ -221,7 +226,7 @@ pub fn save(dir: &Path, tree: &Tree, meta: &SavedScan) -> io::Result<()> {
         )
         .map_err(io::Error::other)?;
         bincode::serde::encode_into_std_write(
-            node.allocated,
+            (node.allocated, node.modified),
             &mut writer,
             bincode::config::standard(),
         )
@@ -337,11 +342,15 @@ fn decode(mut bytes: &[u8], version: u32) -> Result<Tree, bincode::error::Decode
     if count > bytes.len() {
         return Err(bincode::error::DecodeError::Other(OPEN_ERROR));
     }
-    let (records, checkpoint, has_allocated) = match version {
-        2 => (vec![], None, false),
+    let (records, checkpoint, has_allocated, has_modified) = match version {
+        2 => (vec![], None, false, false),
         3 => {
             let (records, checkpoint) = read(&mut bytes)?;
-            (records, checkpoint, false)
+            (records, checkpoint, false, false)
+        }
+        4 => {
+            let (r, c, a) = read(&mut bytes)?;
+            (r, c, a, false)
         }
         _ => read(&mut bytes)?,
     };
@@ -367,6 +376,7 @@ fn decode(mut bytes: &[u8], version: u32) -> Result<Tree, bincode::error::Decode
             kind: node.kind,
             size: node.size,
             allocated,
+            modified: if version >= 5 { read(&mut bytes)? } else { 0 },
             files: node.files,
             folders: node.folders,
             category: node.category,
@@ -382,6 +392,7 @@ fn decode(mut bytes: &[u8], version: u32) -> Result<Tree, bincode::error::Decode
         records,
         checkpoint,
         has_allocated,
+        has_modified,
     })
 }
 
@@ -451,7 +462,7 @@ mod benchmarks {
     use std::{hint::black_box, time::Instant};
 
     #[test]
-    fn versions_two_and_three_load_logical_sizes_and_resave_as_four() {
+    fn versions_two_through_four_load_without_dates_and_resave_as_five() {
         let scanned = tempfile::tempdir().unwrap();
         fs::write(scanned.path().join("file.bin"), vec![1; 10_000]).unwrap();
         let mut tree = crate::scanner::scan(
@@ -471,7 +482,7 @@ mod benchmarks {
             journal_id: 42,
             next_usn: 1234,
         });
-        for version in [2, 3] {
+        for version in [2, 3, 4] {
             let dir = tempfile::tempdir().unwrap();
             let root = &tree.nodes[0];
             let meta = SavedScan {
@@ -499,6 +510,15 @@ mod benchmarks {
                         .unwrap(),
                 );
             }
+            if version == 4 {
+                payload.extend(
+                    bincode::serde::encode_to_vec(
+                        (&tree.records, tree.checkpoint, tree.has_allocated),
+                        config,
+                    )
+                    .unwrap(),
+                );
+            }
             for node in &tree.nodes {
                 payload.extend(
                     bincode::serde::encode_to_vec(
@@ -516,6 +536,9 @@ mod benchmarks {
                     )
                     .unwrap(),
                 );
+                if version == 4 {
+                    payload.extend(bincode::serde::encode_to_vec(node.allocated, config).unwrap());
+                }
             }
             let mut encoded = MAGIC.to_vec();
             encoded.extend(version.to_le_bytes());
@@ -530,10 +553,26 @@ mod benchmarks {
             assert_eq!(list(dir.path()).unwrap(), vec![meta.clone()]);
             let (loaded, actual) = load(dir.path(), &meta.path).unwrap();
             assert_eq!(actual, meta);
+            let query = crate::search::Query::parse("modified>=1970-01-01", u64::MAX).unwrap();
+            assert_eq!(loaded.search(0, &query, 20).unwrap().total, 0);
+            let output = dir.path().join("old.csv");
+            crate::export::export(&loaded, 0, &output, crate::export::Format::Csv).unwrap();
+            assert!(
+                !fs::read_to_string(output)
+                    .unwrap()
+                    .lines()
+                    .next()
+                    .unwrap()
+                    .contains("modified")
+            );
             let mut expected = tree.clone();
-            expected.has_allocated = false;
+            expected.has_allocated = version >= 4;
+            expected.has_modified = false;
             for node in &mut expected.nodes {
-                node.allocated = node.size;
+                if version < 4 {
+                    node.allocated = node.size;
+                }
+                node.modified = 0;
             }
             if version == 2 {
                 expected.records.clear();
@@ -545,7 +584,7 @@ mod benchmarks {
             );
             save(dir.path(), &loaded, &meta).unwrap();
             let (loaded, actual) = load(dir.path(), &meta.path).unwrap();
-            assert_eq!(actual.version, 4);
+            assert_eq!(actual.version, 5);
             assert_eq!(
                 serde_json::to_value(&loaded).unwrap(),
                 serde_json::to_value(&expected).unwrap()
@@ -563,6 +602,7 @@ mod benchmarks {
             records: vec![],
             checkpoint: None,
             has_allocated: true,
+            has_modified: true,
         };
         let mut random = 42_u64;
         for id in 0..1_500_000 {
@@ -582,6 +622,7 @@ mod benchmarks {
                 kind: if directory { Kind::Dir } else { Kind::File },
                 size: if directory { 0 } else { random % 100_000_000 },
                 allocated: if directory { 0 } else { random % 100_000_000 },
+                modified: 0,
                 files: u64::from(!directory),
                 folders: 0,
                 category: Some((id % categories().len()) as u8),

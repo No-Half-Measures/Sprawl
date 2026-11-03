@@ -2,6 +2,7 @@ mod admin;
 mod cache;
 mod changes;
 pub mod cli;
+mod dates;
 mod export;
 mod mft;
 mod recycle;
@@ -30,10 +31,20 @@ struct Session {
     panels: Arc<RootPanels>,
 }
 
+#[derive(PartialEq, Eq)]
+struct FileKey {
+    node_id: usize,
+    query: String,
+    sort: scanner::FileSort,
+    descending: bool,
+}
+
 #[derive(Default)]
 struct RootPanels {
     largest: OnceLock<Result<Vec<scanner::LargeFile>, String>>,
     breakdown: OnceLock<Result<Vec<scanner::Breakdown>, String>>,
+    extensions: OnceLock<Result<Vec<scanner::ExtensionTotal>, String>>,
+    files: Mutex<Option<(FileKey, Arc<Vec<usize>>)>>,
     changes: OnceLock<Result<Option<changes::Comparison>, String>>,
 }
 
@@ -51,6 +62,7 @@ impl Session {
                 root: tree.view(0, 0, 0)?,
                 errors: tree.errors,
                 has_allocated: tree.has_allocated,
+                has_modified: tree.has_modified,
                 saved: saved.clone(),
             }));
         }
@@ -224,6 +236,7 @@ struct LoadedScan {
     root: scanner::ViewNode,
     errors: u64,
     has_allocated: bool,
+    has_modified: bool,
     saved: SavedScan,
 }
 
@@ -255,6 +268,7 @@ async fn load_saved_scan(
             root: tree.view(0, 0, 0)?,
             errors: tree.errors,
             has_allocated: tree.has_allocated,
+            has_modified: tree.has_modified,
             saved,
         };
         let tree = Arc::new(tree);
@@ -317,6 +331,7 @@ struct Completed {
     root: scanner::ViewNode,
     errors: u64,
     has_allocated: bool,
+    has_modified: bool,
 }
 
 #[tauri::command]
@@ -435,6 +450,7 @@ fn start_scan(
                         root,
                         errors: tree.errors,
                         has_allocated: tree.has_allocated,
+                        has_modified: tree.has_modified,
                     };
                     let tree = Arc::new(tree);
                     let meta = scan_metadata(&tree);
@@ -689,6 +705,34 @@ async fn get_type_breakdown(
     .map_err(|e| e.to_string())?
 }
 #[tauri::command]
+async fn get_extension_breakdown(
+    node_id: usize,
+    state: State<'_, AppState>,
+) -> Result<Vec<scanner::ExtensionTotal>, String> {
+    let (tree, panels) = {
+        let session = state
+            .session
+            .lock()
+            .map_err(|_| "Scan state is unavailable".to_string())?;
+        (
+            session
+                .tree
+                .clone()
+                .ok_or("No completed scan. Choose a folder to begin.")?,
+            session.panels.clone(),
+        )
+    };
+    tauri::async_runtime::spawn_blocking(move || {
+        if node_id == 0 {
+            panels.extensions.get_or_init(|| tree.extensions(0)).clone()
+        } else {
+            tree.extensions(node_id)
+        }
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+#[tauri::command]
 async fn get_changes(
     node_id: usize,
     app: tauri::AppHandle,
@@ -730,6 +774,64 @@ async fn get_changes(
     .await
     .map_err(|e| e.to_string())?
 }
+#[tauri::command]
+async fn get_files(
+    node_id: usize,
+    query: String,
+    sort: String,
+    descending: bool,
+    offset: usize,
+    limit: usize,
+    state: State<'_, AppState>,
+) -> Result<scanner::FilePage, String> {
+    let parsed: search::Query = query.parse()?;
+    let sort = scanner::FileSort::parse(&sort)?;
+    let (tree, panels) = {
+        let session = state
+            .session
+            .lock()
+            .map_err(|_| "Scan state is unavailable".to_string())?;
+        (
+            session
+                .tree
+                .clone()
+                .ok_or("No completed scan. Choose a folder to begin.")?,
+            session.panels.clone(),
+        )
+    };
+    tauri::async_runtime::spawn_blocking(move || {
+        tree.node(node_id)?;
+        let key = FileKey {
+            node_id,
+            query,
+            sort,
+            descending,
+        };
+        let cached = panels
+            .files
+            .lock()
+            .map_err(|_| "File list is unavailable".to_string())?
+            .as_ref()
+            .filter(|(k, _)| *k == key)
+            .map(|(_, ids)| ids.clone());
+        let ids = match cached {
+            Some(ids) => ids,
+            None => {
+                let ids = Arc::new(tree.files(node_id, &parsed, sort, descending)?);
+                *panels
+                    .files
+                    .lock()
+                    .map_err(|_| "File list is unavailable".to_string())? =
+                    Some((key, ids.clone()));
+                ids
+            }
+        };
+        Ok(tree.file_page(node_id, &ids, offset, limit))
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
 #[tauri::command]
 async fn search(
     node_id: usize,
@@ -869,6 +971,8 @@ pub fn run() {
             delete_item,
             get_largest_files,
             get_type_breakdown,
+            get_extension_breakdown,
+            get_files,
             get_changes,
             search,
             export_scan,
