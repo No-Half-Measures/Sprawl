@@ -456,6 +456,10 @@ describe('administrator controls', () => {
   it('shows the fast path when elevated', () => {
     const html = renderToStaticMarkup(<HomeScreen {...props} admin={{ ...admin, elevated: true, alwaysElevate: true }} />);
     expect(html).toContain('Running as administrator · drive scans use the fast path.');
+    expect(html).not.toContain('admin-row');
+    const heading = html.match(/<div class="section-heading drives-heading">(.*?)<\/button><\/div>/)?.[1];
+    expect(heading).toContain('Running as administrator · drive scans use the fast path.');
+    expect(heading).toContain('Scan a folder');
     expect(html).not.toContain('Restart as administrator');
     expect(html).not.toContain('type="checkbox"');
   });

@@ -81,7 +81,7 @@ Dark by default, with a light palette when the system theme is light. There is o
 
 ### 1. Home
 - Each drive gets a card with its letter and label, a used/free bar, the text "412 GB used of 1 TB", and a **Scan** button.
-- A **Scan a folder…** button opens the folder picker.
+- A **Scan a folder…** button in the drives heading opens the folder picker.
 - The header's settings (cog) menu is available on every screen on Windows. **Add "Scan with Sprawl" to Explorer's right-click menu** registers folders, backgrounds and drives per user, without admin access. The checkbox reads the registry and repairs stale executable paths when enabled. Explorer launches scan in the existing window, ignoring requests during deletion; Windows 11 shows the item under **Show more options**.
 - On Windows, an admin row offers **Restart as administrator** (UAC relaunch) when not elevated. **Always run as administrator** lives in the header's settings (cog) menu. The preference lives in `settings.json` in the app's local data directory; when set, startup relaunches elevated and continues unelevated if UAC is declined.
 

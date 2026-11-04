@@ -33,28 +33,27 @@ export default function HomeScreen({
   const folders = saved.filter(s => !drives.some(d => isDriveRoot(s.path, d.mount)));
   return (
     <section className="home-content">
-      <div className="home-intro">
-        <button
-          className="primary"
-          disabled={disabled}
-          onClick={() => void pickFolder()}
-        >
-          ▱ &nbsp; Scan a folder…
-        </button>
-      </div>
       <section className="drives-section">
-        <div className="section-heading">
-          <h2>Your drives</h2>
-          <span>{drives.length} available</span>
-        </div>
-        {admin?.supported && (
-          <div className="admin-row">
-            <span>{admin.elevated
-              ? 'Running as administrator · drive scans use the fast path.'
-              : 'Drive scans are much faster when Sprawl runs as administrator.'}</span>
-            {!admin.elevated && (
-              <button disabled={disabled} onClick={() => void restartAsAdmin()}>Restart as administrator</button>
+        <div className="section-heading drives-heading">
+          <div>
+            <h2>Your drives</h2>
+            <span>{drives.length} available</span>
+            {admin?.supported && admin.elevated && (
+              <span>Running as administrator · drive scans use the fast path.</span>
             )}
+          </div>
+          <button
+            className="primary"
+            disabled={disabled}
+            onClick={() => void pickFolder()}
+          >
+            ▱ &nbsp; Scan a folder…
+          </button>
+        </div>
+        {admin?.supported && !admin.elevated && (
+          <div className="admin-row">
+            <span>Drive scans are much faster when Sprawl runs as administrator.</span>
+            <button disabled={disabled} onClick={() => void restartAsAdmin()}>Restart as administrator</button>
           </div>
         )}
         <div className="drive-grid">
@@ -76,25 +75,25 @@ export default function HomeScreen({
                 <div className="drive-meter">
                   <i style={{ width: `${d.total ? (d.total - d.free) / d.total * 100 : 0}%` }} />
                 </div>
-                <p><strong>{formatSize(d.total - d.free)}</strong> used of {formatSize(d.total)}</p>
+                <p>
+                  <span><strong>{formatSize(d.total - d.free)}</strong> used of {formatSize(d.total)}</span>
+                  <span>{formatSize(d.free)} free</span>
+                </p>
                 {scan && (
                   <div className={`last-scan ${stale?.old || stale?.freeDelta != null ? 'warning' : ''}`}>
                     Last scanned {formatAge(scan.scannedAt, now)} · {formatSize(scan.size)}
                   </div>
                 )}
-                <div className="drive-bottom">
-                  <span>{formatSize(d.free)} free</span>
-                  <div className="drive-actions">
-                    {scan && (
-                      <button disabled={disabled} onClick={() => void openSaved(scan.path, scan.scannedAt)}>{opening === scan.path ? 'Opening…' : 'Open last scan'}</button>
-                    )}
-                    <button
-                      disabled={disabled}
-                      onClick={() => void start(d.mount)}
-                    >
-                      Scan drive
-                    </button>
-                  </div>
+                <div className="drive-actions">
+                  {scan && (
+                    <button disabled={disabled} onClick={() => void openSaved(scan.path, scan.scannedAt)}>{opening === scan.path ? 'Opening…' : 'Open last scan'}</button>
+                  )}
+                  <button
+                    disabled={disabled}
+                    onClick={() => void start(d.mount)}
+                  >
+                    Scan drive
+                  </button>
                 </div>
               </article>
             );
