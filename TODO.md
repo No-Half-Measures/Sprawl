@@ -45,6 +45,3 @@ DaisyDisk) have and Sprawl lacks, most valuable first.
       installing.
 - [ ] **Owner and permissions columns.** Useful on shared servers.
 
-## Not planned
-
-- Opening or running files. Sprawl only reveals them in Explorer, on purpose.
