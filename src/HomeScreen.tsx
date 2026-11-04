@@ -34,8 +34,6 @@ export default function HomeScreen({
   return (
     <section className="home-content">
       <div className="home-intro">
-        <h1>See where your space goes.</h1>
-        <p>Map a drive or folder. Follow the big pieces. Everything stays exactly where it is.</p>
         <button
           className="primary"
           disabled={disabled}
@@ -126,10 +124,6 @@ export default function HomeScreen({
       {saved.length > 0 && (
         <button className="clear-saved" disabled={disabled} onClick={() => void clearSaved()}>Clear saved scans</button>
       )}
-      <footer className="home-footer">
-        <span>Read-only by design</span>
-        <span>Logical file sizes · Links and junctions excluded</span>
-      </footer>
     </section>
   );
 }

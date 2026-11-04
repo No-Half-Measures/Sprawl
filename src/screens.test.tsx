@@ -341,7 +341,7 @@ describe('screen details', () => {
     expect(html).not.toContain('% of C:');
   });
 
-  it('keeps five drive cards and a single-line home heading', () => {
+  it('keeps five drive cards without home marketing copy', () => {
     const html = renderToStaticMarkup(
       <HomeScreen
         drives={['C','D','E','G','H'].map(letter => ({ mount: `${letter}:\\`, label: 'Local disk', total: 1024, free: 512 }))}
@@ -355,7 +355,10 @@ describe('screen details', () => {
       />,
     );
     expect(html.match(/class="drive-card"/g)).toHaveLength(5);
-    expect(html).toContain('<h1>See where your space goes.</h1>');
+    expect(html).not.toContain('<h1');
+    expect(html).not.toContain('Read-only by design');
+    expect(html).not.toContain('Logical file sizes');
+    expect(html).toContain('Scan a folder');
   });
 });
 

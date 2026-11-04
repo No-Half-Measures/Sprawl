@@ -561,7 +561,6 @@ export default function App() {
           <img className="brand-mark" src="/sprawl.svg" alt="" />
           Sprawl
         </div>
-        <span className="header-note">A little perspective on your space.</span>
         <div className="header-actions">
           {phase === 'results' && <>
             <button onClick={() => void start(scanPath)}>Rescan</button>
