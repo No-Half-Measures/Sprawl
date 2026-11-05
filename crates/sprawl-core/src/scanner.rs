@@ -22,7 +22,7 @@ pub struct Category {
 pub fn categories() -> &'static [Category] {
     static CATEGORIES: OnceLock<Vec<Category>> = OnceLock::new();
     CATEGORIES.get_or_init(|| {
-        serde_json::from_str(include_str!("../../src/categories.json")).unwrap_or_default()
+        serde_json::from_str(include_str!("../../../src/categories.json")).unwrap_or_default()
     })
 }
 

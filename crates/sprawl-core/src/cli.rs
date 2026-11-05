@@ -1,8 +1,9 @@
 use crate::{
     admin,
+    backend::{drive_for_path, list_drives, scan_metadata},
     cache::{self, SavedScan},
     changes::{Comparison, Removed},
-    drive_for_path, export, list_drives, scan_metadata,
+    export,
     scanner::{self, Breakdown, Kind, Tree, ViewNode},
     search::Query,
 };

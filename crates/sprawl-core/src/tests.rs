@@ -5,6 +5,32 @@ use crate::{
 };
 use std::{fs, path::Path, sync::atomic::AtomicBool, time::Instant};
 
+#[test]
+fn backend_cancel_before_worker_starts_emits_cancelled_without_saving() {
+    use crate::{Backend, BackendEvent};
+    use std::{sync::mpsc, time::Duration};
+
+    let data = tempfile::tempdir().unwrap();
+    let root = tempfile::tempdir().unwrap();
+    let (send, receive) = mpsc::channel();
+    let backend = Backend::new(data.path().into(), None, move |event| {
+        send.send(event).unwrap();
+    });
+    let worker = backend.inner.worker.lock().unwrap();
+    let scan_id = backend
+        .start_scan(root.path().to_string_lossy().into())
+        .unwrap();
+    backend.cancel_scan().unwrap();
+    drop(worker);
+    assert!(matches!(
+        receive.recv_timeout(Duration::from_secs(30)).unwrap(),
+        BackendEvent::ScanCancelled(event) if event.scan_id == scan_id
+    ));
+    assert!(backend.get_tree(None, 0, 0).is_err());
+    assert!(backend.list_saved_scans().unwrap().is_empty());
+    assert!(receive.try_recv().is_err());
+}
+
 fn fixture() -> (tempfile::TempDir, Tree) {
     let dir = tempfile::tempdir().unwrap();
     fs::create_dir(dir.path().join("nested")).unwrap();
@@ -120,7 +146,7 @@ fn elevated_arguments_preserve_windows_quoting() {
 
 #[test]
 fn drive_metadata_uses_the_longest_mount_prefix() {
-    let drives = [r"C:\", r"C:\Mounted", r"D:\"].map(|mount| crate::Drive {
+    let drives = [r"C:\", r"C:\Mounted", r"D:\"].map(|mount| crate::backend::Drive {
         mount: mount.into(),
         label: String::new(),
         total: 1000,
@@ -134,7 +160,7 @@ fn drive_metadata_uses_the_longest_mount_prefix() {
         (r"E:\folder", None),
     ] {
         assert_eq!(
-            crate::drive_for_path(path, &drives).map(|d| d.mount.as_str()),
+            crate::backend::drive_for_path(path, &drives).map(|d| d.mount.as_str()),
             expected
         );
     }
@@ -485,7 +511,7 @@ fn opening_matching_session_reuses_tree_and_panels() {
     let meta = saved(&tree, 123);
     let tree = Arc::new(tree);
     let cancel = Arc::new(AtomicBool::new(false));
-    let mut session = crate::Session {
+    let mut session = crate::backend::Session {
         tree: Some(tree.clone()),
         saved: Some(meta.clone()),
         cancel: Some(cancel.clone()),
@@ -1327,7 +1353,7 @@ fn deep_directory_chain_on_one_worker() {
 
 #[test]
 fn event_payloads_match_the_ipc_contract() {
-    let progress = crate::ScanEvent {
+    let progress = crate::backend::ScanEvent {
         scan_id: 7,
         data: scanner::Progress {
             files: 3,
@@ -1340,9 +1366,9 @@ fn event_payloads_match_the_ipc_contract() {
     assert_eq!(json["currentPath"], "");
     assert!(json.get("data").is_none());
     assert_eq!(
-        serde_json::to_value(crate::ScanEvent {
+        serde_json::to_value(crate::backend::ScanEvent {
             scan_id: 7,
-            data: crate::Cancelled {}
+            data: crate::backend::Cancelled {}
         })
         .unwrap(),
         serde_json::json!({ "scanId": 7 })
@@ -1353,7 +1379,7 @@ fn event_payloads_match_the_ipc_contract() {
 fn completed_and_loaded_payloads_report_allocated_sizes() {
     let (_dir, tree) = fixture();
     let root = tree.view(0, 0, 0).unwrap();
-    let completed = serde_json::to_value(crate::Completed {
+    let completed = serde_json::to_value(crate::backend::Completed {
         root: root.clone(),
         errors: 0,
         has_allocated: true,
@@ -1363,7 +1389,7 @@ fn completed_and_loaded_payloads_report_allocated_sizes() {
     assert_eq!(completed["hasAllocated"], true);
     assert_eq!(completed["hasModified"], true);
     assert_eq!(completed["root"]["allocated"], tree.nodes[0].allocated);
-    let loaded = serde_json::to_value(crate::LoadedScan {
+    let loaded = serde_json::to_value(crate::backend::LoadedScan {
         root,
         errors: 0,
         has_allocated: false,
@@ -1548,7 +1574,7 @@ fn smoke_real_directory() {
 #[test]
 fn cli_reads_the_app_scan_folder() {
     let config: serde_json::Value =
-        serde_json::from_str(include_str!("../tauri.conf.json")).unwrap();
+        serde_json::from_str(include_str!("../../../src-tauri/tauri.conf.json")).unwrap();
     assert_eq!(config["identifier"], crate::cli::IDENTIFIER);
 }
 

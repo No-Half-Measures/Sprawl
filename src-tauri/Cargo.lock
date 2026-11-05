@@ -3323,18 +3323,24 @@ dependencies = [
 name = "sprawl"
 version = "0.2.0"
 dependencies = [
+ "sprawl-core",
+ "tauri",
+ "tauri-build",
+ "tauri-plugin-dialog",
+ "tauri-plugin-opener",
+ "tauri-plugin-single-instance",
+]
+
+[[package]]
+name = "sprawl-core"
+version = "0.2.0"
+dependencies = [
  "bincode",
  "dirs",
  "rayon",
  "serde",
  "serde_json",
  "sysinfo",
- "tauri",
- "tauri-build",
- "tauri-plugin-dialog",
- "tauri-plugin-opener",
- "tauri-plugin-single-instance",
- "tempfile",
  "windows-sys 0.61.2",
  "zstd",
 ]

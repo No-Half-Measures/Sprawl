@@ -712,7 +712,7 @@ mod benchmarks {
             "TIMING breakdown: {:.3} ms",
             start.elapsed().as_secs_f64() * 1000.0
         );
-        let mut session = crate::Session {
+        let mut session = crate::backend::Session {
             tree: Some(std::sync::Arc::new(tree)),
             saved: Some(meta.clone()),
             ..Default::default()

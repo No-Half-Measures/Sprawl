@@ -115,7 +115,7 @@ machine, the first directory walk after the other tools ran took 28.6 s. Later
 walks took 11 to 19 s.
 
 To reproduce the Sprawl numbers, run these from an elevated terminal in
-`src-tauri`:
+`crates/sprawl-core`:
 
 ```text
 cargo test --release mft_matches_directory_scan -- --ignored --nocapture
@@ -277,8 +277,11 @@ Copy the `sprawl` folder into `~/.claude/skills/` for Claude Code or
 ```text
 npm run build
 npm test
-cd src-tauri
+cd crates/sprawl-core
 cargo test
+cargo clippy --all-targets -- -D warnings
+cargo fmt --check
+cd ../../src-tauri
 cargo clippy --all-targets -- -D warnings
 cargo fmt --check
 ```
