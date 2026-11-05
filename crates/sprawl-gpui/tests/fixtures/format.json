@@ -1,0 +1,1015 @@
+{
+  "labels": [
+    {
+      "name": "a",
+      "width": 0,
+      "lines": 0,
+      "fit": null,
+      "wrap": []
+    },
+    {
+      "name": "a",
+      "width": 0,
+      "lines": 1,
+      "fit": null,
+      "wrap": []
+    },
+    {
+      "name": "a",
+      "width": 0,
+      "lines": 2,
+      "fit": null,
+      "wrap": []
+    },
+    {
+      "name": "a",
+      "width": 21,
+      "lines": 0,
+      "fit": "a",
+      "wrap": []
+    },
+    {
+      "name": "a",
+      "width": 21,
+      "lines": 1,
+      "fit": "a",
+      "wrap": [
+        "a"
+      ]
+    },
+    {
+      "name": "a",
+      "width": 21,
+      "lines": 2,
+      "fit": "a",
+      "wrap": [
+        "a"
+      ]
+    },
+    {
+      "name": "a",
+      "width": 35,
+      "lines": 0,
+      "fit": "a",
+      "wrap": []
+    },
+    {
+      "name": "a",
+      "width": 35,
+      "lines": 1,
+      "fit": "a",
+      "wrap": [
+        "a"
+      ]
+    },
+    {
+      "name": "a",
+      "width": 35,
+      "lines": 2,
+      "fit": "a",
+      "wrap": [
+        "a"
+      ]
+    },
+    {
+      "name": "a",
+      "width": 49,
+      "lines": 0,
+      "fit": "a",
+      "wrap": []
+    },
+    {
+      "name": "a",
+      "width": 49,
+      "lines": 1,
+      "fit": "a",
+      "wrap": [
+        "a"
+      ]
+    },
+    {
+      "name": "a",
+      "width": 49,
+      "lines": 2,
+      "fit": "a",
+      "wrap": [
+        "a"
+      ]
+    },
+    {
+      "name": "a",
+      "width": 98,
+      "lines": 0,
+      "fit": "a",
+      "wrap": []
+    },
+    {
+      "name": "a",
+      "width": 98,
+      "lines": 1,
+      "fit": "a",
+      "wrap": [
+        "a"
+      ]
+    },
+    {
+      "name": "a",
+      "width": 98,
+      "lines": 2,
+      "fit": "a",
+      "wrap": [
+        "a"
+      ]
+    },
+    {
+      "name": "a",
+      "width": 500,
+      "lines": 0,
+      "fit": "a",
+      "wrap": []
+    },
+    {
+      "name": "a",
+      "width": 500,
+      "lines": 1,
+      "fit": "a",
+      "wrap": [
+        "a"
+      ]
+    },
+    {
+      "name": "a",
+      "width": 500,
+      "lines": 2,
+      "fit": "a",
+      "wrap": [
+        "a"
+      ]
+    },
+    {
+      "name": "abcd",
+      "width": 0,
+      "lines": 0,
+      "fit": null,
+      "wrap": []
+    },
+    {
+      "name": "abcd",
+      "width": 0,
+      "lines": 1,
+      "fit": null,
+      "wrap": []
+    },
+    {
+      "name": "abcd",
+      "width": 0,
+      "lines": 2,
+      "fit": null,
+      "wrap": []
+    },
+    {
+      "name": "abcd",
+      "width": 21,
+      "lines": 0,
+      "fit": null,
+      "wrap": []
+    },
+    {
+      "name": "abcd",
+      "width": 21,
+      "lines": 1,
+      "fit": null,
+      "wrap": []
+    },
+    {
+      "name": "abcd",
+      "width": 21,
+      "lines": 2,
+      "fit": null,
+      "wrap": []
+    },
+    {
+      "name": "abcd",
+      "width": 35,
+      "lines": 0,
+      "fit": "abcd",
+      "wrap": []
+    },
+    {
+      "name": "abcd",
+      "width": 35,
+      "lines": 1,
+      "fit": "abcd",
+      "wrap": [
+        "abcd"
+      ]
+    },
+    {
+      "name": "abcd",
+      "width": 35,
+      "lines": 2,
+      "fit": "abcd",
+      "wrap": [
+        "abcd"
+      ]
+    },
+    {
+      "name": "abcd",
+      "width": 49,
+      "lines": 0,
+      "fit": "abcd",
+      "wrap": []
+    },
+    {
+      "name": "abcd",
+      "width": 49,
+      "lines": 1,
+      "fit": "abcd",
+      "wrap": [
+        "abcd"
+      ]
+    },
+    {
+      "name": "abcd",
+      "width": 49,
+      "lines": 2,
+      "fit": "abcd",
+      "wrap": [
+        "abcd"
+      ]
+    },
+    {
+      "name": "abcd",
+      "width": 98,
+      "lines": 0,
+      "fit": "abcd",
+      "wrap": []
+    },
+    {
+      "name": "abcd",
+      "width": 98,
+      "lines": 1,
+      "fit": "abcd",
+      "wrap": [
+        "abcd"
+      ]
+    },
+    {
+      "name": "abcd",
+      "width": 98,
+      "lines": 2,
+      "fit": "abcd",
+      "wrap": [
+        "abcd"
+      ]
+    },
+    {
+      "name": "abcd",
+      "width": 500,
+      "lines": 0,
+      "fit": "abcd",
+      "wrap": []
+    },
+    {
+      "name": "abcd",
+      "width": 500,
+      "lines": 1,
+      "fit": "abcd",
+      "wrap": [
+        "abcd"
+      ]
+    },
+    {
+      "name": "abcd",
+      "width": 500,
+      "lines": 2,
+      "fit": "abcd",
+      "wrap": [
+        "abcd"
+      ]
+    },
+    {
+      "name": "abcde",
+      "width": 0,
+      "lines": 0,
+      "fit": null,
+      "wrap": []
+    },
+    {
+      "name": "abcde",
+      "width": 0,
+      "lines": 1,
+      "fit": null,
+      "wrap": []
+    },
+    {
+      "name": "abcde",
+      "width": 0,
+      "lines": 2,
+      "fit": null,
+      "wrap": []
+    },
+    {
+      "name": "abcde",
+      "width": 21,
+      "lines": 0,
+      "fit": null,
+      "wrap": []
+    },
+    {
+      "name": "abcde",
+      "width": 21,
+      "lines": 1,
+      "fit": null,
+      "wrap": []
+    },
+    {
+      "name": "abcde",
+      "width": 21,
+      "lines": 2,
+      "fit": null,
+      "wrap": []
+    },
+    {
+      "name": "abcde",
+      "width": 35,
+      "lines": 0,
+      "fit": "abcde",
+      "wrap": []
+    },
+    {
+      "name": "abcde",
+      "width": 35,
+      "lines": 1,
+      "fit": "abcde",
+      "wrap": [
+        "abcde"
+      ]
+    },
+    {
+      "name": "abcde",
+      "width": 35,
+      "lines": 2,
+      "fit": "abcde",
+      "wrap": [
+        "abcde"
+      ]
+    },
+    {
+      "name": "abcde",
+      "width": 49,
+      "lines": 0,
+      "fit": "abcde",
+      "wrap": []
+    },
+    {
+      "name": "abcde",
+      "width": 49,
+      "lines": 1,
+      "fit": "abcde",
+      "wrap": [
+        "abcde"
+      ]
+    },
+    {
+      "name": "abcde",
+      "width": 49,
+      "lines": 2,
+      "fit": "abcde",
+      "wrap": [
+        "abcde"
+      ]
+    },
+    {
+      "name": "abcde",
+      "width": 98,
+      "lines": 0,
+      "fit": "abcde",
+      "wrap": []
+    },
+    {
+      "name": "abcde",
+      "width": 98,
+      "lines": 1,
+      "fit": "abcde",
+      "wrap": [
+        "abcde"
+      ]
+    },
+    {
+      "name": "abcde",
+      "width": 98,
+      "lines": 2,
+      "fit": "abcde",
+      "wrap": [
+        "abcde"
+      ]
+    },
+    {
+      "name": "abcde",
+      "width": 500,
+      "lines": 0,
+      "fit": "abcde",
+      "wrap": []
+    },
+    {
+      "name": "abcde",
+      "width": 500,
+      "lines": 1,
+      "fit": "abcde",
+      "wrap": [
+        "abcde"
+      ]
+    },
+    {
+      "name": "abcde",
+      "width": 500,
+      "lines": 2,
+      "fit": "abcde",
+      "wrap": [
+        "abcde"
+      ]
+    },
+    {
+      "name": "a long file-name_with.words.txt",
+      "width": 0,
+      "lines": 0,
+      "fit": null,
+      "wrap": []
+    },
+    {
+      "name": "a long file-name_with.words.txt",
+      "width": 0,
+      "lines": 1,
+      "fit": null,
+      "wrap": []
+    },
+    {
+      "name": "a long file-name_with.words.txt",
+      "width": 0,
+      "lines": 2,
+      "fit": null,
+      "wrap": []
+    },
+    {
+      "name": "a long file-name_with.words.txt",
+      "width": 21,
+      "lines": 0,
+      "fit": null,
+      "wrap": []
+    },
+    {
+      "name": "a long file-name_with.words.txt",
+      "width": 21,
+      "lines": 1,
+      "fit": null,
+      "wrap": []
+    },
+    {
+      "name": "a long file-name_with.words.txt",
+      "width": 21,
+      "lines": 2,
+      "fit": null,
+      "wrap": []
+    },
+    {
+      "name": "a long file-name_with.words.txt",
+      "width": 35,
+      "lines": 0,
+      "fit": "a lo…",
+      "wrap": []
+    },
+    {
+      "name": "a long file-name_with.words.txt",
+      "width": 35,
+      "lines": 1,
+      "fit": "a lo…",
+      "wrap": [
+        "a lo…"
+      ]
+    },
+    {
+      "name": "a long file-name_with.words.txt",
+      "width": 35,
+      "lines": 2,
+      "fit": "a lo…",
+      "wrap": [
+        "a ",
+        "long…"
+      ]
+    },
+    {
+      "name": "a long file-name_with.words.txt",
+      "width": 49,
+      "lines": 0,
+      "fit": "a long…",
+      "wrap": []
+    },
+    {
+      "name": "a long file-name_with.words.txt",
+      "width": 49,
+      "lines": 1,
+      "fit": "a long…",
+      "wrap": [
+        "a long…"
+      ]
+    },
+    {
+      "name": "a long file-name_with.words.txt",
+      "width": 49,
+      "lines": 2,
+      "fit": "a long…",
+      "wrap": [
+        "a long ",
+        "file-n…"
+      ]
+    },
+    {
+      "name": "a long file-name_with.words.txt",
+      "width": 98,
+      "lines": 0,
+      "fit": "a long file-n…",
+      "wrap": []
+    },
+    {
+      "name": "a long file-name_with.words.txt",
+      "width": 98,
+      "lines": 1,
+      "fit": "a long file-n…",
+      "wrap": [
+        "a long file-n…"
+      ]
+    },
+    {
+      "name": "a long file-name_with.words.txt",
+      "width": 98,
+      "lines": 2,
+      "fit": "a long file-n…",
+      "wrap": [
+        "a long file-",
+        "name_with.wor…"
+      ]
+    },
+    {
+      "name": "a long file-name_with.words.txt",
+      "width": 500,
+      "lines": 0,
+      "fit": "a long file-name_with.words.txt",
+      "wrap": []
+    },
+    {
+      "name": "a long file-name_with.words.txt",
+      "width": 500,
+      "lines": 1,
+      "fit": "a long file-name_with.words.txt",
+      "wrap": [
+        "a long file-name_with.words.txt"
+      ]
+    },
+    {
+      "name": "a long file-name_with.words.txt",
+      "width": 500,
+      "lines": 2,
+      "fit": "a long file-name_with.words.txt",
+      "wrap": [
+        "a long file-name_with.words.txt"
+      ]
+    },
+    {
+      "name": "😀😀😀😀😀😀😀.txt",
+      "width": 0,
+      "lines": 0,
+      "fit": null,
+      "wrap": []
+    },
+    {
+      "name": "😀😀😀😀😀😀😀.txt",
+      "width": 0,
+      "lines": 1,
+      "fit": null,
+      "wrap": []
+    },
+    {
+      "name": "😀😀😀😀😀😀😀.txt",
+      "width": 0,
+      "lines": 2,
+      "fit": null,
+      "wrap": []
+    },
+    {
+      "name": "😀😀😀😀😀😀😀.txt",
+      "width": 21,
+      "lines": 0,
+      "fit": null,
+      "wrap": []
+    },
+    {
+      "name": "😀😀😀😀😀😀😀.txt",
+      "width": 21,
+      "lines": 1,
+      "fit": null,
+      "wrap": []
+    },
+    {
+      "name": "😀😀😀😀😀😀😀.txt",
+      "width": 21,
+      "lines": 2,
+      "fit": null,
+      "wrap": []
+    },
+    {
+      "name": "😀😀😀😀😀😀😀.txt",
+      "width": 35,
+      "lines": 0,
+      "fit": "😀😀😀😀…",
+      "wrap": []
+    },
+    {
+      "name": "😀😀😀😀😀😀😀.txt",
+      "width": 35,
+      "lines": 1,
+      "fit": "😀😀😀😀…",
+      "wrap": [
+        "😀😀😀😀…"
+      ]
+    },
+    {
+      "name": "😀😀😀😀😀😀😀.txt",
+      "width": 35,
+      "lines": 2,
+      "fit": "😀😀😀😀…",
+      "wrap": [
+        "😀😀😀😀😀",
+        "😀😀.t…"
+      ]
+    },
+    {
+      "name": "😀😀😀😀😀😀😀.txt",
+      "width": 49,
+      "lines": 0,
+      "fit": "😀😀😀😀😀😀…",
+      "wrap": []
+    },
+    {
+      "name": "😀😀😀😀😀😀😀.txt",
+      "width": 49,
+      "lines": 1,
+      "fit": "😀😀😀😀😀😀…",
+      "wrap": [
+        "😀😀😀😀😀😀…"
+      ]
+    },
+    {
+      "name": "😀😀😀😀😀😀😀.txt",
+      "width": 49,
+      "lines": 2,
+      "fit": "😀😀😀😀😀😀…",
+      "wrap": [
+        "😀😀😀😀😀😀😀",
+        ".txt"
+      ]
+    },
+    {
+      "name": "😀😀😀😀😀😀😀.txt",
+      "width": 98,
+      "lines": 0,
+      "fit": "😀😀😀😀😀😀😀.txt",
+      "wrap": []
+    },
+    {
+      "name": "😀😀😀😀😀😀😀.txt",
+      "width": 98,
+      "lines": 1,
+      "fit": "😀😀😀😀😀😀😀.txt",
+      "wrap": [
+        "😀😀😀😀😀😀😀.txt"
+      ]
+    },
+    {
+      "name": "😀😀😀😀😀😀😀.txt",
+      "width": 98,
+      "lines": 2,
+      "fit": "😀😀😀😀😀😀😀.txt",
+      "wrap": [
+        "😀😀😀😀😀😀😀.txt"
+      ]
+    },
+    {
+      "name": "😀😀😀😀😀😀😀.txt",
+      "width": 500,
+      "lines": 0,
+      "fit": "😀😀😀😀😀😀😀.txt",
+      "wrap": []
+    },
+    {
+      "name": "😀😀😀😀😀😀😀.txt",
+      "width": 500,
+      "lines": 1,
+      "fit": "😀😀😀😀😀😀😀.txt",
+      "wrap": [
+        "😀😀😀😀😀😀😀.txt"
+      ]
+    },
+    {
+      "name": "😀😀😀😀😀😀😀.txt",
+      "width": 500,
+      "lines": 2,
+      "fit": "😀😀😀😀😀😀😀.txt",
+      "wrap": [
+        "😀😀😀😀😀😀😀.txt"
+      ]
+    },
+    {
+      "name": "folder\\some-name.ext",
+      "width": 0,
+      "lines": 0,
+      "fit": null,
+      "wrap": []
+    },
+    {
+      "name": "folder\\some-name.ext",
+      "width": 0,
+      "lines": 1,
+      "fit": null,
+      "wrap": []
+    },
+    {
+      "name": "folder\\some-name.ext",
+      "width": 0,
+      "lines": 2,
+      "fit": null,
+      "wrap": []
+    },
+    {
+      "name": "folder\\some-name.ext",
+      "width": 21,
+      "lines": 0,
+      "fit": null,
+      "wrap": []
+    },
+    {
+      "name": "folder\\some-name.ext",
+      "width": 21,
+      "lines": 1,
+      "fit": null,
+      "wrap": []
+    },
+    {
+      "name": "folder\\some-name.ext",
+      "width": 21,
+      "lines": 2,
+      "fit": null,
+      "wrap": []
+    },
+    {
+      "name": "folder\\some-name.ext",
+      "width": 35,
+      "lines": 0,
+      "fit": "fold…",
+      "wrap": []
+    },
+    {
+      "name": "folder\\some-name.ext",
+      "width": 35,
+      "lines": 1,
+      "fit": "fold…",
+      "wrap": [
+        "fold…"
+      ]
+    },
+    {
+      "name": "folder\\some-name.ext",
+      "width": 35,
+      "lines": 2,
+      "fit": "fold…",
+      "wrap": [
+        "folde",
+        "r\\so…"
+      ]
+    },
+    {
+      "name": "folder\\some-name.ext",
+      "width": 49,
+      "lines": 0,
+      "fit": "folder…",
+      "wrap": []
+    },
+    {
+      "name": "folder\\some-name.ext",
+      "width": 49,
+      "lines": 1,
+      "fit": "folder…",
+      "wrap": [
+        "folder…"
+      ]
+    },
+    {
+      "name": "folder\\some-name.ext",
+      "width": 49,
+      "lines": 2,
+      "fit": "folder…",
+      "wrap": [
+        "folder\\",
+        "some-n…"
+      ]
+    },
+    {
+      "name": "folder\\some-name.ext",
+      "width": 98,
+      "lines": 0,
+      "fit": "folder\\some-n…",
+      "wrap": []
+    },
+    {
+      "name": "folder\\some-name.ext",
+      "width": 98,
+      "lines": 1,
+      "fit": "folder\\some-n…",
+      "wrap": [
+        "folder\\some-n…"
+      ]
+    },
+    {
+      "name": "folder\\some-name.ext",
+      "width": 98,
+      "lines": 2,
+      "fit": "folder\\some-n…",
+      "wrap": [
+        "folder\\some-",
+        "name.ext"
+      ]
+    },
+    {
+      "name": "folder\\some-name.ext",
+      "width": 500,
+      "lines": 0,
+      "fit": "folder\\some-name.ext",
+      "wrap": []
+    },
+    {
+      "name": "folder\\some-name.ext",
+      "width": 500,
+      "lines": 1,
+      "fit": "folder\\some-name.ext",
+      "wrap": [
+        "folder\\some-name.ext"
+      ]
+    },
+    {
+      "name": "folder\\some-name.ext",
+      "width": 500,
+      "lines": 2,
+      "fit": "folder\\some-name.ext",
+      "wrap": [
+        "folder\\some-name.ext"
+      ]
+    }
+  ],
+  "colors": [
+    {
+      "hex": "#ffffff",
+      "result": "#152330"
+    },
+    {
+      "hex": "#000000",
+      "result": "#ffffff"
+    },
+    {
+      "hex": "#94a3b5",
+      "result": "#152330"
+    },
+    {
+      "hex": "#86b9ef",
+      "result": "#152330"
+    },
+    {
+      "hex": "#354557",
+      "result": "#ffffff"
+    },
+    {
+      "hex": "#ff0000",
+      "result": "#152330"
+    },
+    {
+      "hex": "#00ff00",
+      "result": "#152330"
+    },
+    {
+      "hex": "#0000ff",
+      "result": "#ffffff"
+    }
+  ],
+  "sizes": [
+    {
+      "value": 0,
+      "result": "0 B"
+    },
+    {
+      "value": -1,
+      "result": "0 B"
+    },
+    {
+      "value": 1,
+      "result": "1 B"
+    },
+    {
+      "value": 999,
+      "result": "999 B"
+    },
+    {
+      "value": 1023,
+      "result": "1,023 B"
+    },
+    {
+      "value": 1024,
+      "result": "1 KB"
+    },
+    {
+      "value": 1536,
+      "result": "1.5 KB"
+    },
+    {
+      "value": 104805171.2,
+      "result": "100 MB"
+    },
+    {
+      "value": 105381888,
+      "result": "101 MB"
+    },
+    {
+      "value": 1125899906842624,
+      "result": "1 PB"
+    },
+    {
+      "value": 1152921504606847000,
+      "result": "1,024 PB"
+    }
+  ],
+  "shares": [
+    {
+      "value": 0,
+      "total": 0,
+      "result": "0%"
+    },
+    {
+      "value": 1,
+      "total": 10000,
+      "result": "<0.1%"
+    },
+    {
+      "value": 1,
+      "total": 1000,
+      "result": "0.1%"
+    },
+    {
+      "value": 12345,
+      "total": 99999,
+      "result": "12.3%"
+    },
+    {
+      "value": 1,
+      "total": 3,
+      "result": "33.3%"
+    },
+    {
+      "value": 100,
+      "total": 100,
+      "result": "100%"
+    }
+  ],
+  "counts": [
+    {
+      "value": 0,
+      "result": "0 files"
+    },
+    {
+      "value": 1,
+      "result": "1 file"
+    },
+    {
+      "value": 2,
+      "result": "2 files"
+    },
+    {
+      "value": 1234567,
+      "result": "1,234,567 files"
+    }
+  ],
+  "paths": [
+    {
+      "value": "short",
+      "limit": 100,
+      "result": "short"
+    },
+    {
+      "value": "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ",
+      "limit": 20,
+      "result": "abcdefgh…OPQRSTUVWXYZ"
+    },
+    {
+      "value": "abcdef",
+      "limit": 0,
+      "result": "…abcdef"
+    }
+  ]
+}

@@ -17,7 +17,7 @@ use std::{
     time::{SystemTime, UNIX_EPOCH},
 };
 
-pub(crate) const IDENTIFIER: &str = "com.sprawl.app";
+pub const IDENTIFIER: &str = "com.sprawl.app";
 
 const USAGE: &str = "\
 Sprawl command line. Prints JSON reports for scripts and AI agents.
