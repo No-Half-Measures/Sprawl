@@ -15,6 +15,15 @@ pub struct MapCache {
     lit: Option<std::collections::HashSet<Option<usize>>>,
 }
 
+impl MapCache {
+    pub fn clear(&mut self) {
+        self.tiles.clear();
+        self.key = None;
+        self.matches = None;
+        self.lit = None;
+    }
+}
+
 pub fn color(hex: &str) -> Hsla {
     rgb(u32::from_str_radix(hex.trim_start_matches('#'), 16).unwrap_or(0x94a3b5)).into()
 }

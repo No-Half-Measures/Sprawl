@@ -370,9 +370,17 @@ impl DiskApp {
             .on_hover(cx.listener(move |this, hovered: &bool, _, cx| {
                 this.set_hover(hovered.then_some(id), cx)
             }))
+            .on_mouse_down(
+                MouseButton::Right,
+                cx.listener(move |this, e: &MouseDownEvent, window, cx| {
+                    this.context_id(id, e.position, window, cx)
+                }),
+            )
             .on_click(cx.listener(move |this, _, _, cx| {
                 if folder {
                     this.open_id(id, cx);
+                } else {
+                    this.reveal_id(id, cx);
                 }
             }))
             .child(
@@ -520,11 +528,12 @@ impl DiskApp {
                             .on_hover(cx.listener(move |this, h: &bool, _, cx| {
                                 this.set_hover(if *h { id } else { None }, cx)
                             }))
+                            .on_mouse_down(MouseButton::Right, cx.listener(move |this, e: &MouseDownEvent, window, cx| { if let Some(id) = id { this.context_id(id, e.position, window, cx); } }))
                             .on_click(cx.listener(move |this, _, _, cx| {
                                 if folder {
                                     this.hover = id;
                                     this.enter(cx);
-                                }
+                                } else if let Some(id) = id { this.reveal_id(id, cx); }
                             }))
                             .child(
                                 div()

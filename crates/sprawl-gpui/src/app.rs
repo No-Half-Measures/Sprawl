@@ -1,5 +1,7 @@
 #[path = "header.rs"]
 mod header;
+#[path = "integration.rs"]
+mod integration;
 #[path = "map_panel.rs"]
 mod map_panel;
 #[path = "panels.rs"]
@@ -42,6 +44,9 @@ pub struct DiskApp {
     drives: Vec<Drive>,
     saved: Vec<SavedScan>,
     busy: bool,
+    opening: bool,
+    prompt_open: bool,
+    pending_launch: Option<String>,
     cancelling: bool,
     scan: Option<u64>,
     progress: Progress,
@@ -72,13 +77,29 @@ pub struct DiskApp {
     focus: FocusHandle,
     trace: bool,
     startup: Instant,
+    restore_focus: Option<FocusHandle>,
+    session: u64,
+    notice: String,
+    notice_serial: u64,
+    menu: Option<(Node, Point<Pixels>, Size<Pixels>)>,
+    deleting: Option<integration::DeleteDialog>,
+    delete_pending: bool,
+    exporting: bool,
+    admin: sprawl_core::backend::AdminStatus,
+    admin_busy: bool,
+    settings_open: bool,
+    recycled: u64,
+    deleted: u64,
 }
 
 impl DiskApp {
     pub fn new(
         data: PathBuf,
         open: Option<String>,
+        launch: Option<String>,
+        launches: Option<mpsc::UnboundedReceiver<Vec<String>>>,
         startup: Instant,
+        window_handle: AnyWindowHandle,
         cx: &mut Context<Self>,
     ) -> Self {
         let prefs_path = data.join("gpui-panels.json");
@@ -95,16 +116,70 @@ impl DiskApp {
         })
         .detach();
         let (tx, mut events) = mpsc::unbounded();
-        let backend = Backend::new(data, None, move |event| {
+        let backend = Backend::new(data, launch, move |event| {
             let _ = tx.unbounded_send(event);
         });
+        if let Some(mut launches) = launches {
+            cx.spawn(async move |weak, cx| {
+                while let Some(args) = launches.next().await {
+                    let path = crate::actions::arguments(args.into_iter().skip(1))
+                        .ok()
+                        .and_then(|args| sprawl_core::shell::launch_path(args.remaining));
+                    let _ = window_handle.update(cx, |_, window, cx| {
+                        let _ = weak.update(cx, |this: &mut Self, cx| {
+                            if this.modal() {
+                                return;
+                            }
+                            window.activate_window();
+                            if let Some(path) = path {
+                                this.backend.request_scan(path);
+                            }
+                            this.drain(cx);
+                            window.refresh();
+                            cx.notify();
+                        });
+                    });
+                }
+            })
+            .detach();
+        }
+        #[cfg(windows)]
+        let mut startup_error = String::new();
+        #[cfg(not(windows))]
+        let startup_error = String::new();
+        #[cfg(windows)]
+        {
+            let status = backend.admin_status();
+            if status.always_elevate
+                && !status.elevated
+                && !std::env::args_os().any(|a| a == "--elevated")
+            {
+                match backend.restart_as_admin() {
+                    Ok(()) => std::process::exit(0),
+                    Err(_) => backend.mark_admin_declined(),
+                }
+            }
+            if status.elevated
+                && let Err(e) =
+                    sprawl_core::shell::allow_scan_requests(crate::single_instance::IDENTIFIER)
+            {
+                startup_error = e;
+            }
+        }
+        let admin = backend.admin_status();
         let event_task = cx.spawn(async move |weak, cx| {
             while let Some(event) = events.next().await {
                 if weak
                     .update(cx, |this, cx| {
                         let needs_notify = this.pending.is_empty();
+                        if matches!(event, BackendEvent::ScanRequested(_)) && this.modal() {
+                            return;
+                        }
                         this.pending.push(event);
                         while let Ok(event) = events.try_recv() {
+                            if matches!(event, BackendEvent::ScanRequested(_)) && this.modal() {
+                                continue;
+                            }
                             this.pending.push(event);
                         }
                         // One repaint request per frame, even during a progress flood.
@@ -126,6 +201,9 @@ impl DiskApp {
             drives: vec![],
             saved: vec![],
             busy: true,
+            opening: false,
+            prompt_open: false,
+            pending_launch: None,
             cancelling: false,
             scan: None,
             progress: Progress::default(),
@@ -156,7 +234,24 @@ impl DiskApp {
             focus: cx.focus_handle(),
             trace: std::env::var_os("SPRAWL_TRACE").is_some(),
             startup,
+            restore_focus: None,
+            session: 0,
+            notice: String::new(),
+            notice_serial: 0,
+            menu: None,
+            deleting: None,
+            delete_pending: false,
+            exporting: false,
+            admin,
+            admin_busy: false,
+            settings_open: false,
+            recycled: 0,
+            deleted: 0,
         };
+        this.error = startup_error;
+        if this.admin.declined {
+            this.notice("Continuing without administrator access.".into(), cx);
+        }
         this.refresh(open, cx);
         this
     }
@@ -179,23 +274,51 @@ impl DiskApp {
         .detach();
     }
 
+    fn work_on_own_thread<R: Send + 'static>(
+        &self,
+        job: impl FnOnce(Backend) -> Result<R, String> + Send + 'static,
+        done: impl FnOnce(&mut Self, Result<R, String>, &mut Context<Self>) + 'static,
+        cx: &mut Context<Self>,
+    ) {
+        // Shell operations need a fresh COM apartment; GPUI's Windows pool is already MTA.
+        let backend = self.backend.clone();
+        let (sender, receiver) = futures::channel::oneshot::channel();
+        let thread = std::thread::Builder::new().spawn(move || {
+            let _ = sender.send(job(backend));
+        });
+        cx.spawn(async move |weak, cx| {
+            let result = match thread {
+                Ok(_) => receiver.await.unwrap_or_else(|_| {
+                    Err("The operation's worker thread stopped unexpectedly.".into())
+                }),
+                Err(e) => Err(format!("Couldn't start the operation's worker thread: {e}")),
+            };
+            let _ = weak.update(cx, |this, cx| {
+                done(this, result, cx);
+                cx.notify();
+            });
+        })
+        .detach();
+    }
+
     fn refresh(&mut self, open: Option<String>, cx: &mut Context<Self>) {
         let initial = self.busy && matches!(self.screen, Screen::Home);
         self.work(
             |b| (b.list_drives(), b.list_saved_scans()),
             move |this, (drives, saved), cx| {
                 this.drives = drives;
+                this.drives
+                    .sort_by(|a, b| crate::actions::compare_mounts(&a.mount, &b.mount));
                 if initial {
                     this.busy = false;
                 }
                 match saved {
                     Ok(saved) => this.saved = saved,
-                    Err(e) => {
-                        this.error = e;
-                        return;
-                    }
+                    Err(e) => this.error = e,
                 }
-                if let Some(path) = open {
+                if let Some(path) = this.backend.take_launch_path() {
+                    this.scan_requested(path, cx);
+                } else if let Some(path) = open {
                     if let Some(saved) = this
                         .saved
                         .iter()
@@ -221,18 +344,18 @@ impl DiskApp {
     }
 
     fn drain(&mut self, cx: &mut Context<Self>) {
-        // A very fast scan can finish before start_scan's return reaches the foreground.
-        if matches!(self.screen, Screen::Scan) && self.busy {
-            return;
-        }
         let (progress, events) = coalesce(self.pending.drain(..), self.scan);
         if let Some(progress) = progress {
             self.progress = progress;
             cx.notify();
         }
         for event in events {
+            if !crate::state::accepts_event(&event, self.scan) {
+                continue;
+            }
             match event {
                 BackendEvent::ScanComplete(e) => {
+                    self.menu = None;
                     self.scan = None;
                     self.allocated = e.data.has_allocated;
                     self.modified = e.data.has_modified;
@@ -245,42 +368,50 @@ impl DiskApp {
                     self.scan = None;
                     self.cancelling = false;
                     self.screen = Screen::Home;
+                    self.notice(
+                        "Scan cancelled. Choose a drive or folder to start again.".into(),
+                        cx,
+                    );
                     self.refresh(None, cx);
                 }
                 BackendEvent::ScanError(e) => self.fail(e.data.message),
                 BackendEvent::SavedScansChanged => self.refresh(None, cx),
-                _ => {}
+                BackendEvent::ScanRequested(path) => self.scan_requested(path, cx),
+                BackendEvent::ScanProgress(_) => {}
             }
             cx.notify();
         }
     }
 
     fn start(&mut self, path: String, cx: &mut Context<Self>) {
-        if self.busy || matches!(self.screen, Screen::Scan) {
+        if self.modal() || self.opening || self.prompt_open {
             return;
         }
+        self.session += 1;
+        self.menu = None;
+        self.settings_open = false;
+        self.notice.clear();
+        self.recycled = 0;
+        self.deleted = 0;
         self.requests.next();
         self.panels.invalidate();
         self.snapshot = None;
         self.scan_path = path.clone();
         self.tree = None;
+        self.cache.borrow_mut().clear();
+        self.pointer_tile = None;
         self.hover = None;
         self.error.clear();
         self.screen = Screen::Scan;
-        self.busy = true;
         self.cancelling = false;
         self.progress = Progress::default();
-        self.work(
-            move |b| b.start_scan(path),
-            |this, result, _| {
-                this.busy = false;
-                match result {
-                    Ok(id) => this.scan = Some(id),
-                    Err(e) => this.fail(e),
-                }
-            },
-            cx,
-        );
+        self.scan = None;
+        self.busy = false;
+        match self.backend.start_scan(path) {
+            Ok(id) => self.scan = Some(id),
+            Err(e) => self.fail(e),
+        }
+        cx.notify();
     }
 
     fn pick(&mut self, cx: &mut Context<Self>) {
@@ -288,6 +419,7 @@ impl DiskApp {
             return;
         }
         self.busy = true;
+        self.prompt_open = true;
         let prompt = cx.prompt_for_paths(PathPromptOptions {
             files: false,
             directories: true,
@@ -298,6 +430,12 @@ impl DiskApp {
             let result = prompt.await;
             let _ = weak.update(cx, |this, cx| {
                 this.busy = false;
+                this.prompt_open = false;
+                // A forwarded launch takes precedence over the folder picker result.
+                if this.resume_launch(cx) {
+                    cx.notify();
+                    return;
+                }
                 match result {
                     Ok(Ok(Some(paths))) => {
                         if let Some(path) = paths.first() {
@@ -315,21 +453,41 @@ impl DiskApp {
     }
 
     fn open(&mut self, saved: SavedScan, cx: &mut Context<Self>) {
-        if self.busy {
+        if self.modal() || self.busy {
             return;
         }
+        self.session += 1;
+        self.cache.borrow_mut().clear();
+        self.pointer_tile = None;
+        self.menu = None;
+        self.settings_open = false;
+        self.notice.clear();
+        self.tree = None;
+        self.scan = None;
         self.busy = true;
+        self.opening = true;
         self.error.clear();
         self.requests.next();
+        let session = self.session;
         self.work(
             move |b| b.load_saved_scan(saved.path, saved.scanned_at),
-            |this, result, cx| {
+            move |this, result, cx| {
+                if this.session != session {
+                    return;
+                }
                 this.busy = false;
+                this.opening = false;
+                // Loading bumps the backend generation; launches must wait for it.
+                if this.resume_launch(cx) {
+                    return;
+                }
                 match result {
                     Ok(scan) => {
                         this.allocated = scan.has_allocated;
                         this.modified = scan.has_modified;
                         this.scan_path = scan.saved.path.clone();
+                        this.recycled = scan.saved.recycled;
+                        this.deleted = scan.saved.deleted;
                         this.snapshot = Some(scan.saved);
                         this.skipped = scan.errors;
                         this.trail = vec![scan.root.into()];
@@ -354,6 +512,8 @@ impl DiskApp {
         self.panels.reset();
         self.busy = true;
         self.tree = None;
+        self.cache.borrow_mut().clear();
+        self.pointer_tile = None;
         self.error.clear();
         self.screen = Screen::Results;
         self.work(
@@ -371,6 +531,8 @@ impl DiskApp {
                 this.busy = false;
                 match result {
                     Ok((tree, files, types)) => {
+                        this.cache.borrow_mut().clear();
+                        this.pointer_tile = None;
                         this.tree = Some(Rc::new(tree.into()));
                         this.panels.largest =
                             files.into_iter().map(panels::FileRow::from).collect();
@@ -406,21 +568,33 @@ impl DiskApp {
     }
 
     fn navigate(&mut self, next: Vec<Node>, cx: &mut Context<Self>) {
+        if self.modal() {
+            return;
+        }
         self.history.push(std::mem::replace(&mut self.trail, next));
         self.request_tree(cx);
     }
     fn back(&mut self, cx: &mut Context<Self>) {
+        if self.modal() {
+            return;
+        }
         if let Some(trail) = self.history.pop() {
             self.trail = trail;
             self.request_tree(cx);
         }
     }
     fn up(&mut self, cx: &mut Context<Self>) {
+        if self.modal() {
+            return;
+        }
         if self.trail.len() > 1 {
             self.navigate(self.trail[..self.trail.len() - 1].to_vec(), cx);
         }
     }
     fn enter(&mut self, cx: &mut Context<Self>) {
+        if self.modal() {
+            return;
+        }
         if self.busy {
             return;
         }
@@ -449,9 +623,12 @@ impl DiskApp {
         enabled: bool,
         action: impl Fn(&mut Self, &mut Context<Self>) + 'static,
         cx: &Context<Self>,
-    ) -> impl IntoElement {
+    ) -> Stateful<Div> {
         let text = text.into();
-        let enabled = enabled && !self.busy;
+        let enabled = enabled
+            && !self.busy
+            && !self.modal()
+            && !(matches!(self.screen, Screen::Home) && self.admin_busy);
         div()
             .id(id)
             .px_3()
@@ -481,13 +658,34 @@ impl DiskApp {
             .p_8()
             .flex()
             .flex_col()
-            .gap_4()
+            .gap_4();
+        let mut section = div()
+            .flex()
+            .flex_col()
             .child(
                 div()
                     .flex()
+                    .flex_wrap()
                     .justify_between()
                     .items_center()
-                    .child(format!("Your drives · {} available", self.drives.len()))
+                    .gap_3()
+                    .child(
+                        div()
+                            .flex()
+                            .flex_wrap()
+                            .items_baseline()
+                            .gap_x(px(14.))
+                            .gap_y(px(6.))
+                            .child(format!("Your drives · {} available", self.drives.len()))
+                            .when(self.admin.supported && self.admin.elevated, |d| {
+                                d.child(
+                                    div()
+                                        .text_size(px(12.))
+                                        .text_color(rgb(0xa5b4c5))
+                                        .child("Running as administrator \u{b7} drive scans use the fast path."),
+                                )
+                            }),
+                    )
                     .child(self.button(
                         "pick",
                         "Scan a folder…",
@@ -495,14 +693,44 @@ impl DiskApp {
                         |this, cx| this.pick(cx),
                         cx,
                     )),
-            );
-        if !self.error.is_empty() {
-            body = body.child(div().text_color(rgb(0xf4b3b3)).child(self.error.clone()));
-        }
+            )
+            .when(self.admin.supported && !self.admin.elevated, |d| {
+                d.child(
+                    div()
+                        .flex()
+                        .flex_wrap()
+                        .items_center()
+                        .gap_x_4()
+                        .gap_y(px(10.))
+                        .pt_1()
+                        .pb_2()
+                        .text_size(px(13.))
+                        .text_color(rgb(0xa5b4c5))
+                        .child(
+                            div()
+                                .flex_grow()
+                                .flex_basis(px(300.))
+                                .child("Drive scans are much faster when Sprawl runs as administrator."),
+                        )
+                        .child(
+                            self.button(
+                                "admin-restart",
+                                "Restart as administrator",
+                                !self.admin_busy,
+                                |this, cx| this.restart_admin(cx),
+                                cx,
+                            )
+                            .px(px(10.))
+                            .py(px(6.))
+                            .text_color(rgb(0xeaf0f6)),
+                        ),
+                )
+            });
+
         if self.busy {
-            body = body.child("Opening…");
+            section = section.child("Opening…");
         }
-        let mut drives = div().flex().flex_wrap().gap_3();
+        let mut drives = div().mt_2().flex().flex_wrap().gap_3();
         for (index, d) in self.drives.iter().enumerate() {
             let saved = self.saved.iter().find(|s| same_path(&s.path, &d.mount));
             let mount = d.mount.clone();
@@ -551,11 +779,21 @@ impl DiskApp {
                 );
             let mut actions = div().flex().gap_2().justify_end();
             if let Some(saved) = saved {
-                card = card.child(div().text_sm().text_color(rgb(0xa5b4c5)).child(format!(
-                    "Last scanned {} · {}",
-                    age(saved.scanned_at),
-                    format_size(saved.size as f64)
-                )));
+                let (old, delta) = crate::format::staleness(saved, Some(d), crate::format::now());
+                card = card.child(
+                    div()
+                        .text_sm()
+                        .text_color(if old || delta.is_some() {
+                            rgb(0xe6c34a)
+                        } else {
+                            rgb(0xa5b4c5)
+                        })
+                        .child(format!(
+                            "Last scanned {} · {}",
+                            age(saved.scanned_at),
+                            format_size(saved.size as f64)
+                        )),
+                );
                 let saved = saved.clone();
                 actions = actions.child(self.button(
                     ("open-drive", index),
@@ -574,7 +812,7 @@ impl DiskApp {
             ));
             drives = drives.child(card.child(actions));
         }
-        body = body.child(drives);
+        body = body.child(section.child(drives));
         if self.drives.is_empty() && !self.busy {
             body = body.child("No drives found. Choose a folder to explore its disk usage.");
         }
@@ -602,11 +840,28 @@ impl DiskApp {
                             .flex_col()
                             .gap_1()
                             .child(middle_path(&saved.path, 90))
-                            .child(div().text_sm().text_color(rgb(0xa5b4c5)).child(format!(
-                                "{} · {}",
-                                age(saved.scanned_at),
-                                format_size(saved.size as f64)
-                            ))),
+                            .child(
+                                div()
+                                    .text_sm()
+                                    .text_color(
+                                        if crate::format::staleness(
+                                            &saved,
+                                            None,
+                                            crate::format::now(),
+                                        )
+                                        .0
+                                        {
+                                            rgb(0xe6c34a)
+                                        } else {
+                                            rgb(0xa5b4c5)
+                                        },
+                                    )
+                                    .child(format!(
+                                        "{} · {}",
+                                        age(saved.scanned_at),
+                                        format_size(saved.size as f64)
+                                    )),
+                            ),
                     )
                     .child(self.button(
                         ("open-folder", index),
@@ -615,6 +870,36 @@ impl DiskApp {
                         move |this, cx| this.open(saved.clone(), cx),
                         cx,
                     )),
+            );
+        }
+        if !self.saved.is_empty() {
+            body = body.child(
+                div().flex().child(
+                    self.button(
+                        "clear-saved",
+                        "Clear saved scans",
+                        !self.saved.is_empty(),
+                        |this, cx| {
+                            this.work(
+                                |b| b.clear_saved_scans(),
+                                |this, result, cx| match result {
+                                    Ok(()) => this.refresh(None, cx),
+                                    Err(e) => this.error = e,
+                                },
+                                cx,
+                            );
+                        },
+                        cx,
+                    )
+                    .px_0()
+                    .py_2()
+                    .mt(px(6.))
+                    .border_0()
+                    .bg(transparent_black())
+                    .text_color(rgb(0xa5b4c5))
+                    .text_size(px(12.))
+                    .hover(|s| s.bg(transparent_black())),
+                ),
             );
         }
         body.into_any_element()
@@ -688,6 +973,14 @@ impl DiskApp {
 impl Render for DiskApp {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         self.drain(cx);
+        if self
+            .menu
+            .as_ref()
+            .is_some_and(|(_, _, size)| *size != window.viewport_size())
+        {
+            self.menu = None;
+        }
+        self.dialog_focus(window, cx);
         if window.focused(cx).is_none() {
             self.focus.focus(window);
         }
@@ -696,7 +989,9 @@ impl Render for DiskApp {
             Screen::Scan => self.scanning(cx),
             Screen::Results => self.results(window, cx),
         };
+        let overlays = self.overlays(window, cx);
         div()
+            .relative()
             .size_full()
             .when(
                 matches!(self.screen, Screen::Results)
@@ -712,10 +1007,23 @@ impl Render for DiskApp {
             .track_focus(&self.focus)
             .on_mouse_down(
                 MouseButton::Left,
-                cx.listener(|this, _, window, _| this.focus.focus(window)),
+                cx.listener(|this, _, window, _| {
+                    if !this.modal() {
+                        this.focus.focus(window);
+                    }
+                }),
             )
             .on_key_down(cx.listener(|this, event: &KeyDownEvent, window, cx| {
+                if this.modal() {
+                    return;
+                }
                 let key = &event.keystroke.key;
+                if key == "escape" && (this.settings_open || this.menu.is_some()) {
+                    this.settings_open = false;
+                    this.menu = None;
+                    cx.notify();
+                    return;
+                }
                 if key == "escape" {
                     this.search_input.update(cx, |input, cx| input.set("", cx));
                     this.pointer_tile = None;
@@ -761,6 +1069,15 @@ impl Render for DiskApp {
                         div()
                             .flex()
                             .gap_2()
+                            .when(self.admin.supported, |d| {
+                                d.child(self.button(
+                                    "settings",
+                                    "\u{2699}",
+                                    !self.admin_busy,
+                                    |this, _| this.settings_open = !this.settings_open,
+                                    cx,
+                                ))
+                            })
                             .when(matches!(self.screen, Screen::Results), |d| {
                                 d.child(self.button(
                                     "rescan",
@@ -770,25 +1087,55 @@ impl Render for DiskApp {
                                     cx,
                                 ))
                             })
-                            .child(self.button(
-                                "home",
-                                "Home",
-                                !matches!(self.screen, Screen::Scan),
-                                |this, cx| {
-                                    if !this.busy && !matches!(this.screen, Screen::Scan) {
-                                        this.requests.next();
-                                        this.panels.invalidate();
-                                        this.busy = false;
-                                        this.screen = Screen::Home;
-                                        this.hover = None;
-                                        this.refresh(None, cx);
-                                    }
-                                },
-                                cx,
-                            )),
+                            .when(matches!(self.screen, Screen::Results), |d| {
+                                d.child(self.button(
+                                    "home",
+                                    "Home",
+                                    !matches!(self.screen, Screen::Scan),
+                                    |this, cx| {
+                                        if !this.modal()
+                                            && !this.busy
+                                            && !matches!(this.screen, Screen::Scan)
+                                        {
+                                            this.session += 1;
+                                            this.menu = None;
+                                            this.settings_open = false;
+                                            this.requests.next();
+                                            this.panels.invalidate();
+                                            this.busy = false;
+                                            this.screen = Screen::Home;
+                                            this.hover = None;
+                                            this.refresh(None, cx);
+                                        }
+                                    },
+                                    cx,
+                                ))
+                            }),
                     ),
             )
+            .when(!self.error.is_empty(), |d| {
+                d.child(
+                    div()
+                        .px_4()
+                        .py_2()
+                        .bg(rgb(0x593037))
+                        .flex()
+                        .justify_between()
+                        .child(self.error.clone())
+                        .child(
+                            div()
+                                .id("dismiss-error")
+                                .cursor_pointer()
+                                .child("\u{d7}")
+                                .on_click(cx.listener(|this, _, _, cx| {
+                                    this.error.clear();
+                                    cx.notify();
+                                })),
+                        ),
+                )
+            })
             .child(content)
+            .children(overlays)
     }
 }
 

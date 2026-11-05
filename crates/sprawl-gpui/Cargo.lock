@@ -5102,10 +5102,12 @@ dependencies = [
  "dirs 7.0.0",
  "futures",
  "gpui",
+ "raw-window-handle",
  "serde",
  "serde_json",
  "sprawl-core",
  "unicode-segmentation",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]

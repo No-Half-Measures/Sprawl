@@ -1,0 +1,566 @@
+[
+  {
+    "trail": [
+      {
+        "id": 0,
+        "name": "folder-0",
+        "kind": "dir",
+        "size": 0,
+        "files": 0,
+        "folders": 1,
+        "allocated": 0,
+        "children": []
+      },
+      {
+        "id": 1,
+        "name": "folder-1",
+        "kind": "dir",
+        "size": 0,
+        "files": 0,
+        "folders": 1,
+        "allocated": 0,
+        "children": []
+      },
+      {
+        "id": 2,
+        "name": "folder-2",
+        "kind": "dir",
+        "size": 0,
+        "files": 0,
+        "folders": 1,
+        "allocated": 0,
+        "children": []
+      }
+    ],
+    "history": [
+      [
+        {
+          "id": 0,
+          "name": "folder-0",
+          "kind": "dir",
+          "size": 0,
+          "files": 0,
+          "folders": 1,
+          "allocated": 0,
+          "children": []
+        }
+      ],
+      [
+        {
+          "id": 0,
+          "name": "folder-0",
+          "kind": "dir",
+          "size": 0,
+          "files": 0,
+          "folders": 1,
+          "allocated": 0,
+          "children": []
+        },
+        {
+          "id": 3,
+          "name": "folder-3",
+          "kind": "dir",
+          "size": 0,
+          "files": 0,
+          "folders": 1,
+          "allocated": 0,
+          "children": []
+        }
+      ]
+    ],
+    "ids": [
+      0,
+      1,
+      2,
+      3
+    ],
+    "nodes": [
+      {
+        "id": 0,
+        "name": "folder-0",
+        "kind": "dir",
+        "size": 90,
+        "files": 0,
+        "folders": 1,
+        "allocated": 0,
+        "children": []
+      },
+      {
+        "id": 1,
+        "name": "folder-1",
+        "kind": "dir",
+        "size": 50,
+        "files": 0,
+        "folders": 1,
+        "allocated": 0,
+        "children": []
+      },
+      null,
+      {
+        "id": 3,
+        "name": "folder-3",
+        "kind": "dir",
+        "size": 0,
+        "files": 0,
+        "folders": 1,
+        "allocated": 0,
+        "children": []
+      }
+    ],
+    "result": {
+      "trail": [
+        {
+          "id": 0,
+          "name": "folder-0",
+          "kind": "dir",
+          "size": 90,
+          "files": 0,
+          "folders": 1,
+          "allocated": 0,
+          "children": []
+        },
+        {
+          "id": 1,
+          "name": "folder-1",
+          "kind": "dir",
+          "size": 50,
+          "files": 0,
+          "folders": 1,
+          "allocated": 0,
+          "children": []
+        }
+      ],
+      "history": [
+        [
+          {
+            "id": 0,
+            "name": "folder-0",
+            "kind": "dir",
+            "size": 90,
+            "files": 0,
+            "folders": 1,
+            "allocated": 0,
+            "children": []
+          }
+        ],
+        [
+          {
+            "id": 0,
+            "name": "folder-0",
+            "kind": "dir",
+            "size": 90,
+            "files": 0,
+            "folders": 1,
+            "allocated": 0,
+            "children": []
+          },
+          {
+            "id": 3,
+            "name": "folder-3",
+            "kind": "dir",
+            "size": 0,
+            "files": 0,
+            "folders": 1,
+            "allocated": 0,
+            "children": []
+          }
+        ]
+      ]
+    }
+  },
+  {
+    "trail": [
+      {
+        "id": 0,
+        "name": "folder-0",
+        "kind": "dir",
+        "size": 0,
+        "files": 0,
+        "folders": 1,
+        "allocated": 0,
+        "children": []
+      },
+      {
+        "id": 1,
+        "name": "folder-1",
+        "kind": "dir",
+        "size": 0,
+        "files": 0,
+        "folders": 1,
+        "allocated": 0,
+        "children": []
+      }
+    ],
+    "history": [
+      [
+        {
+          "id": 0,
+          "name": "folder-0",
+          "kind": "dir",
+          "size": 0,
+          "files": 0,
+          "folders": 1,
+          "allocated": 0,
+          "children": []
+        },
+        {
+          "id": 1,
+          "name": "folder-1",
+          "kind": "dir",
+          "size": 0,
+          "files": 0,
+          "folders": 1,
+          "allocated": 0,
+          "children": []
+        }
+      ],
+      [
+        {
+          "id": 0,
+          "name": "folder-0",
+          "kind": "dir",
+          "size": 0,
+          "files": 0,
+          "folders": 1,
+          "allocated": 0,
+          "children": []
+        },
+        {
+          "id": 3,
+          "name": "folder-3",
+          "kind": "dir",
+          "size": 0,
+          "files": 0,
+          "folders": 1,
+          "allocated": 0,
+          "children": []
+        }
+      ]
+    ],
+    "ids": [
+      0,
+      1,
+      3
+    ],
+    "nodes": [
+      {
+        "id": 0,
+        "name": "folder-0",
+        "kind": "dir",
+        "size": 0,
+        "files": 0,
+        "folders": 1,
+        "allocated": 0,
+        "children": []
+      },
+      null,
+      {
+        "id": 3,
+        "name": "folder-3",
+        "kind": "dir",
+        "size": 0,
+        "files": 0,
+        "folders": 1,
+        "allocated": 0,
+        "children": []
+      }
+    ],
+    "result": {
+      "trail": [
+        {
+          "id": 0,
+          "name": "folder-0",
+          "kind": "dir",
+          "size": 0,
+          "files": 0,
+          "folders": 1,
+          "allocated": 0,
+          "children": []
+        }
+      ],
+      "history": [
+        [
+          {
+            "id": 0,
+            "name": "folder-0",
+            "kind": "dir",
+            "size": 0,
+            "files": 0,
+            "folders": 1,
+            "allocated": 0,
+            "children": []
+          },
+          {
+            "id": 3,
+            "name": "folder-3",
+            "kind": "dir",
+            "size": 0,
+            "files": 0,
+            "folders": 1,
+            "allocated": 0,
+            "children": []
+          }
+        ]
+      ]
+    }
+  },
+  {
+    "trail": [
+      {
+        "id": 0,
+        "name": "folder-0",
+        "kind": "dir",
+        "size": 0,
+        "files": 0,
+        "folders": 1,
+        "allocated": 0,
+        "children": []
+      },
+      {
+        "id": 1,
+        "name": "folder-1",
+        "kind": "dir",
+        "size": 0,
+        "files": 0,
+        "folders": 1,
+        "allocated": 0,
+        "children": []
+      }
+    ],
+    "history": [
+      [
+        {
+          "id": 0,
+          "name": "folder-0",
+          "kind": "dir",
+          "size": 0,
+          "files": 0,
+          "folders": 1,
+          "allocated": 0,
+          "children": []
+        }
+      ]
+    ],
+    "ids": [
+      0,
+      1
+    ],
+    "nodes": [
+      null,
+      {
+        "id": 1,
+        "name": "folder-1",
+        "kind": "dir",
+        "size": 0,
+        "files": 0,
+        "folders": 1,
+        "allocated": 0,
+        "children": []
+      }
+    ],
+    "result": {
+      "trail": [],
+      "history": []
+    }
+  },
+  {
+    "trail": [
+      {
+        "id": 0,
+        "name": "folder-0",
+        "kind": "dir",
+        "size": 0,
+        "files": 0,
+        "folders": 1,
+        "allocated": 0,
+        "children": []
+      },
+      {
+        "id": 1,
+        "name": "folder-1",
+        "kind": "dir",
+        "size": 0,
+        "files": 0,
+        "folders": 1,
+        "allocated": 0,
+        "children": []
+      }
+    ],
+    "history": [
+      [
+        {
+          "id": 0,
+          "name": "folder-0",
+          "kind": "dir",
+          "size": 0,
+          "files": 0,
+          "folders": 1,
+          "allocated": 0,
+          "children": []
+        },
+        {
+          "id": 1,
+          "name": "folder-1",
+          "kind": "dir",
+          "size": 0,
+          "files": 0,
+          "folders": 1,
+          "allocated": 0,
+          "children": []
+        }
+      ]
+    ],
+    "ids": [
+      0,
+      1
+    ],
+    "nodes": [
+      {
+        "id": 0,
+        "name": "folder-0",
+        "kind": "dir",
+        "size": 100,
+        "files": 0,
+        "folders": 1,
+        "allocated": 0,
+        "children": []
+      },
+      {
+        "id": 1,
+        "name": "folder-1",
+        "kind": "dir",
+        "size": 80,
+        "files": 0,
+        "folders": 1,
+        "allocated": 0,
+        "children": []
+      }
+    ],
+    "result": {
+      "trail": [
+        {
+          "id": 0,
+          "name": "folder-0",
+          "kind": "dir",
+          "size": 100,
+          "files": 0,
+          "folders": 1,
+          "allocated": 0,
+          "children": []
+        },
+        {
+          "id": 1,
+          "name": "folder-1",
+          "kind": "dir",
+          "size": 80,
+          "files": 0,
+          "folders": 1,
+          "allocated": 0,
+          "children": []
+        }
+      ],
+      "history": [
+        [
+          {
+            "id": 0,
+            "name": "folder-0",
+            "kind": "dir",
+            "size": 100,
+            "files": 0,
+            "folders": 1,
+            "allocated": 0,
+            "children": []
+          },
+          {
+            "id": 1,
+            "name": "folder-1",
+            "kind": "dir",
+            "size": 80,
+            "files": 0,
+            "folders": 1,
+            "allocated": 0,
+            "children": []
+          }
+        ]
+      ]
+    }
+  },
+  {
+    "trail": [
+      {
+        "id": 0,
+        "name": "folder-0",
+        "kind": "dir",
+        "size": 0,
+        "files": 0,
+        "folders": 1,
+        "allocated": 0,
+        "children": []
+      },
+      {
+        "id": null,
+        "name": "folder-1",
+        "kind": "dir",
+        "size": 0,
+        "files": 0,
+        "folders": 1,
+        "allocated": 0,
+        "children": []
+      }
+    ],
+    "history": [
+      [
+        {
+          "id": 0,
+          "name": "folder-0",
+          "kind": "dir",
+          "size": 0,
+          "files": 0,
+          "folders": 1,
+          "allocated": 0,
+          "children": []
+        },
+        {
+          "id": 1,
+          "name": "folder-1",
+          "kind": "dir",
+          "size": 0,
+          "files": 0,
+          "folders": 1,
+          "allocated": 0,
+          "children": []
+        }
+      ]
+    ],
+    "ids": [
+      0
+    ],
+    "nodes": [
+      {
+        "id": 0,
+        "name": "folder-0",
+        "kind": "dir",
+        "size": 0,
+        "files": 0,
+        "folders": 1,
+        "allocated": 0,
+        "children": []
+      }
+    ],
+    "result": {
+      "trail": [
+        {
+          "id": 0,
+          "name": "folder-0",
+          "kind": "dir",
+          "size": 0,
+          "files": 0,
+          "folders": 1,
+          "allocated": 0,
+          "children": []
+        }
+      ],
+      "history": []
+    }
+  }
+]

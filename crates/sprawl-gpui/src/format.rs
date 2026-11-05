@@ -148,6 +148,9 @@ pub fn is_drive_root(path: &str, mount: &str) -> bool {
     path.trim_end_matches(['\\', '/'])
         .eq_ignore_ascii_case(mount.trim_end_matches(['\\', '/']))
 }
+pub fn show_drive_figures(scan_path: &str, mount: &str, trail_len: usize) -> bool {
+    trail_len == 1 && is_drive_root(scan_path, mount)
+}
 pub fn staleness(
     saved: &sprawl_core::cache::SavedScan,
     drive: Option<&sprawl_core::backend::Drive>,

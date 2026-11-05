@@ -20,6 +20,11 @@ impl DiskApp {
             })
             .max_by_key(|d| d.mount.len())
     }
+    fn results_drive(&self) -> Option<&Drive> {
+        self.drive().filter(|d| {
+            crate::format::show_drive_figures(&self.scan_path, &d.mount, self.trail.len())
+        })
+    }
     pub(super) fn capacity(&self) -> (u64, u64) {
         let d = self.drive();
         (
@@ -36,13 +41,10 @@ impl DiskApp {
         )
     }
     pub(super) fn not_found(&self) -> Option<u64> {
-        self.drive()?;
+        self.results_drive()?;
         let current = self.trail.last()?;
         let (total, free) = self.capacity();
-        let moved = self
-            .snapshot
-            .as_ref()
-            .map_or(0, |s| s.recycled.saturating_add(s.deleted));
+        let moved = self.recycled.saturating_add(self.deleted);
         not_found_by_scan(
             total,
             free,
@@ -148,6 +150,17 @@ impl DiskApp {
                         cx,
                     ))
                     .child(crumbs)
+                    .child(self.nav_button(
+                        "export",
+                        if self.exporting {
+                            "Exporting\u{2026}"
+                        } else {
+                            "Export\u{2026}"
+                        },
+                        !self.exporting,
+                        |this, cx| this.export(cx),
+                        cx,
+                    ))
                     .child(
                         div()
                             .w(px(if narrow { 180. } else { 270. }))
@@ -166,7 +179,7 @@ impl DiskApp {
         if let Some(n) = self.trail.last() {
             let mut summary = vec![format!(
                 "{}{}",
-                if self.drive().is_some() {
+                if self.results_drive().is_some() {
                     "Scanned "
                 } else {
                     ""
@@ -176,13 +189,10 @@ impl DiskApp {
             if self.allocated {
                 summary.push(format!("{} on disk", format_size(n.allocated as f64)));
             }
-            if let Some(saved) = &self.snapshot
-                && self.drive().is_some()
-                && saved.recycled > 0
-            {
+            if self.results_drive().is_some() && self.recycled > 0 {
                 summary.push(format!(
                     "{} in Recycle Bin",
-                    format_size(saved.recycled as f64)
+                    format_size(self.recycled as f64)
                 ));
             }
             summary.push(count(n.files, "file"));
@@ -199,7 +209,7 @@ impl DiskApp {
                     format_scan_date(c.since)
                 ));
             }
-            if let Some(d) = self.drive() {
+            if let Some(d) = self.results_drive() {
                 let (total, free) = self.capacity();
                 summary.push(format!(
                     "{}   Used {}   Free {}   Total {}",
@@ -211,13 +221,21 @@ impl DiskApp {
                 if let Some(missing) = self.not_found() {
                     summary.push(format!("Not found {}", format_size(missing as f64)));
                 }
-            } else if self.trail.len() > 1 {
-                let parent = &self.trail[self.trail.len() - 2];
-                summary.push(format!(
-                    "{} of {}",
-                    percent(n.size as f64, parent.size as f64),
-                    parent.name
-                ));
+            } else {
+                let parent = self
+                    .trail
+                    .iter()
+                    .rev()
+                    .nth(1)
+                    .map(|p| (p.size, p.name.as_str()))
+                    .or_else(|| self.drive().map(|d| (d.total, d.mount.as_str())));
+                if let Some((size, name)) = parent {
+                    summary.push(format!(
+                        "{} of {}",
+                        percent(n.size as f64, size as f64),
+                        name
+                    ));
+                }
             }
             header =
                 header.child(
@@ -412,15 +430,6 @@ impl DiskApp {
                         "{} couldn't be read. Run as administrator to include them.",
                         count(self.skipped, "item")
                     )),
-            );
-        }
-        if !self.error.is_empty() {
-            body = body.child(
-                div()
-                    .px_5()
-                    .flex_shrink_0()
-                    .text_color(rgb(0xf4b3b3))
-                    .child(self.error.clone()),
             );
         }
         let age_mode = self.modified && self.prefs.color_by == ColorBy::Age;

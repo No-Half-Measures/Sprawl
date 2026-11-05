@@ -2,6 +2,37 @@ use crate::{format::*, layout::*};
 use serde_json::Value;
 
 #[test]
+fn drive_figures_only_at_drive_scan_root() {
+    assert!(!show_drive_figures(r"C:\projects\fx", r"C:\", 1));
+    assert!(show_drive_figures("c:/", "C:", 1));
+    assert!(!show_drive_figures(r"C:\", r"C:\", 2));
+}
+
+#[test]
+fn typescript_refresh_trails() {
+    let cases: Value = serde_json::from_str(include_str!("../tests/fixtures/trails.json")).unwrap();
+    for c in cases.as_array().unwrap() {
+        let trail: Vec<Node> = serde_json::from_value(c["trail"].clone()).unwrap();
+        let history: Vec<Vec<Node>> = serde_json::from_value(c["history"].clone()).unwrap();
+        let ids: Vec<usize> = serde_json::from_value(c["ids"].clone()).unwrap();
+        let nodes: Vec<Option<Node>> = serde_json::from_value(c["nodes"].clone()).unwrap();
+        let (trail, history) = crate::actions::refresh_trails(&trail, &history, &ids, nodes);
+        let expected_trail: Vec<Node> =
+            serde_json::from_value(c["result"]["trail"].clone()).unwrap();
+        let expected_history: Vec<Vec<Node>> =
+            serde_json::from_value(c["result"]["history"].clone()).unwrap();
+        assert_eq!(
+            serde_json::to_value(trail).unwrap(),
+            serde_json::to_value(expected_trail).unwrap()
+        );
+        assert_eq!(
+            serde_json::to_value(history).unwrap(),
+            serde_json::to_value(expected_history).unwrap()
+        );
+    }
+}
+
+#[test]
 fn golden_layout() {
     let cases: Value = serde_json::from_str(include_str!("../tests/fixtures/layout.json")).unwrap();
     for c in cases.as_array().unwrap() {

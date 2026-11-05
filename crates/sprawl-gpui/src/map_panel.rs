@@ -41,6 +41,26 @@ impl DiskApp {
                     this.set_hover(None, cx);
                 }
             }))
+            .on_mouse_down(
+                MouseButton::Right,
+                cx.listener(|this, event: &MouseDownEvent, window, cx| {
+                    if this.busy || this.tree.as_ref().is_none_or(|tree| tree.size == 0) {
+                        return;
+                    }
+                    let cache = this.cache.borrow();
+                    let position = event.position - cache.bounds.origin;
+                    let node = hit(
+                        &cache.tiles,
+                        f32::from(position.x) as f64,
+                        f32::from(position.y) as f64,
+                    )
+                    .map(|i| cache.tiles[i].node.clone());
+                    drop(cache);
+                    if let Some(node) = node {
+                        this.context(node, event.position, window, cx);
+                    }
+                }),
+            )
             .on_click(cx.listener(|this, event: &ClickEvent, _, cx| {
                 if let ClickEvent::Mouse(event) = event
                     && event.down.button == MouseButton::Left

@@ -65,3 +65,13 @@ const stale = [0,7*86400000,7*86400000+1].flatMap(elapsed=>[null,drive,{...drive
 }));
 writeFileSync(`${out}/results.json`,JSON.stringify({now,offset:7200,deltas,dates,scanDates,ages,ageColors,gaps,roots,stale},null,2)+'\n');
 globalThis.Date = RealDate;
+
+const trailRoot = dir(0, []), a = dir(1, []), b = dir(2, []), c = dir(3, []);
+const trailCases = [
+  { trail: [trailRoot, a, b], history: [[trailRoot], [trailRoot, c]], ids: [0,1,2,3], nodes: [{...trailRoot,size:90},{...a,size:50},null,c] },
+  { trail: [trailRoot, a], history: [[trailRoot,a],[trailRoot,c]], ids: [0,1,3], nodes: [trailRoot,null,c] },
+  { trail: [trailRoot,a], history: [[trailRoot]], ids: [0,1], nodes: [null,a] },
+  { trail: [trailRoot,a], history: [[trailRoot,a]], ids: [0,1], nodes: [{...trailRoot,size:100},{...a,size:80}] },
+  { trail: [trailRoot,{...a,id:null}], history: [[trailRoot,a]], ids: [0], nodes: [trailRoot] },
+];
+writeFileSync(`${out}/trails.json`, JSON.stringify(trailCases.map(c=>({...c,result:model.refreshTrails(c.trail,c.history,c.ids,c.nodes)})),null,2)+'\n');
