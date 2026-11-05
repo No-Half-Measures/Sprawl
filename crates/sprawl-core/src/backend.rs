@@ -535,11 +535,36 @@ impl Backend {
         Ok(ids.into_iter().map(|id| tree.view(id, 0, 0).ok()).collect())
     }
 
+    pub fn delete_target(&self, id: usize) -> Result<(scanner::ViewNode, String), String> {
+        let tree = tree(&self.inner)?;
+        Ok((
+            tree.view(id, 0, 0)?,
+            tree.path(id)?.to_string_lossy().into_owned(),
+        ))
+    }
+    pub fn delete_item_at(
+        &self,
+        node_id: usize,
+        permanent: bool,
+        owner: usize,
+        expected_path: &str,
+    ) -> Result<Deleted, String> {
+        self.delete_item_checked(node_id, permanent, owner, Some(expected_path))
+    }
     pub fn delete_item(
         &self,
         node_id: usize,
         permanent: bool,
         owner: usize,
+    ) -> Result<Deleted, String> {
+        self.delete_item_checked(node_id, permanent, owner, None)
+    }
+    fn delete_item_checked(
+        &self,
+        node_id: usize,
+        permanent: bool,
+        owner: usize,
+        expected_path: Option<&str>,
     ) -> Result<Deleted, String> {
         let backend = self;
         let state = &backend.inner;
@@ -560,7 +585,7 @@ impl Backend {
             if node_id == 0 {
                 return Err("The scan root can't be deleted.".into());
             }
-            let path = tree.path(node_id)?;
+            let path = checked_delete_path(&tree, node_id, expected_path)?;
             recycle::check(&path, node.kind)?;
             let meta = session
                 .saved
@@ -862,3 +887,68 @@ impl Backend {
 #[cfg(test)]
 #[path = "tests.rs"]
 mod tests;
+
+// Called under the session lock before filesystem checks or deletion.
+fn checked_delete_path(tree: &Tree, id: usize, expected: Option<&str>) -> Result<PathBuf, String> {
+    let path = tree.path(id)?;
+    if expected.is_some_and(|expected| path.to_string_lossy() != expected) {
+        return Err("This item has changed. Rescan to refresh it.".into());
+    }
+    Ok(path)
+}
+
+#[cfg(test)]
+mod delete_path_tests {
+    use super::*;
+    use std::{fs, sync::mpsc, time::Duration};
+    #[test]
+    fn expected_path_is_checked_without_deleting() {
+        let data = tempfile::tempdir().unwrap();
+        let root = tempfile::tempdir().unwrap();
+        let old = root.path().join("old.txt");
+        fs::write(&old, b"old").unwrap();
+        let (send, receive) = mpsc::channel();
+        let backend = Backend::new(data.path().into(), None, move |event| {
+            let _ = send.send(event);
+        });
+        let scan = || {
+            let id = backend
+                .start_scan(root.path().to_string_lossy().into_owned())
+                .unwrap();
+            loop {
+                if matches!(receive.recv_timeout(Duration::from_secs(30)).unwrap(), BackendEvent::ScanComplete(e) if e.scan_id == id)
+                {
+                    break;
+                }
+            }
+        };
+        scan();
+        let id = backend.get_largest_files(0, 10).unwrap()[0].id;
+        let (view, path) = backend.delete_target(id).unwrap();
+        assert_eq!(view.name, "old.txt");
+        {
+            let session = backend.inner.session.lock().unwrap();
+            let tree = session.tree.as_ref().unwrap();
+            assert_eq!(checked_delete_path(tree, id, Some(&path)).unwrap(), old);
+            assert_eq!(
+                checked_delete_path(tree, id, Some("wrong")).unwrap_err(),
+                "This item has changed. Rescan to refresh it."
+            );
+        }
+        assert!(old.exists());
+        assert_eq!(
+            backend.delete_item_at(id, false, 0, "wrong").err().unwrap(),
+            "This item has changed. Rescan to refresh it."
+        );
+        assert!(old.exists());
+        fs::remove_file(&old).unwrap();
+        let new = root.path().join("new.txt");
+        fs::write(&new, b"new").unwrap();
+        scan();
+        assert_eq!(
+            backend.delete_item_at(id, false, 0, &path).err().unwrap(),
+            "This item has changed. Rescan to refresh it."
+        );
+        assert!(new.exists());
+    }
+}
