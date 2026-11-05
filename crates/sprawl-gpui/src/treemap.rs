@@ -10,8 +10,9 @@ pub struct MapCache {
     pub bounds: Bounds<Pixels>,
     pub tiles: Vec<Tile>,
     key: Option<(u64, f32, f32)>,
-    first_paint: bool,
     startup_reported: bool,
+    matches: Option<Rc<std::collections::HashSet<usize>>>,
+    lit: Option<std::collections::HashSet<Option<usize>>>,
 }
 
 pub fn color(hex: &str) -> Hsla {
@@ -55,15 +56,23 @@ fn line(text: &str, font_size: f32, ink: Hsla, bold: bool, window: &Window) -> S
     )
 }
 
+#[derive(Default)]
+pub struct MapStyle {
+    pub hover: Option<usize>,
+    pub filter: Option<String>,
+    pub matches: Option<Rc<std::collections::HashSet<usize>>>,
+    pub age: bool,
+}
 pub fn map(
     tree: Rc<Node>,
     version: u64,
     cache: Rc<RefCell<MapCache>>,
-    hover: Option<usize>,
+    style: MapStyle,
     trace: bool,
     startup: Instant,
 ) -> impl IntoElement {
     let pre = cache.clone();
+    let matches = style.matches.clone();
     canvas(
         move |bounds, _, _| {
             let mut cache = pre.borrow_mut();
@@ -72,12 +81,14 @@ pub fn map(
                 f32::from(bounds.size.width),
                 f32::from(bounds.size.height),
             );
+            // Canvas prepaint receives the scrolled window bounds every frame,
+            // even when only the origin changes and the tile layout is reused.
             cache.bounds = bounds;
-            if cache.key != Some(key) {
+            let changed = cache.key != Some(key);
+            if changed {
                 let start = Instant::now();
                 cache.tiles = layout_tree(&tree, key.1 as f64, key.2 as f64, true);
                 cache.key = Some(key);
-                cache.first_paint = true;
                 if trace {
                     eprintln!(
                         "layout_ms={:.3} tile_count={}",
@@ -86,24 +97,79 @@ pub fn map(
                     );
                 }
             }
+            if changed || cache.matches.as_ref().map(Rc::as_ptr) != matches.as_ref().map(Rc::as_ptr)
+            {
+                cache.lit = matches.as_ref().map(|ids| {
+                    cache
+                        .tiles
+                        .iter()
+                        .filter(|t| t.node.id.is_some_and(|id| ids.contains(&id)))
+                        .flat_map(|t| t.ancestors.iter().copied())
+                        .collect()
+                });
+                cache.matches = matches.clone();
+            }
         },
         move |bounds, (), window, cx| {
             let start = Instant::now();
+            let now = crate::format::now();
             let mut cache = cache.borrow_mut();
             for tile in &cache.tiles {
                 let rect = Bounds::new(
                     bounds.origin + point(px(tile.x as f32), px(tile.y as f32)),
                     size(px(tile.width as f32), px(tile.height as f32)),
                 );
-                let fill_color = category_color(tile.node.category.as_deref());
+                let fill_color = if style.age {
+                    crate::format::age_color(tile.node.modified, now).to_owned()
+                } else {
+                    category_color(tile.node.category.as_deref())
+                };
+                let alpha = if crate::state::tile_dim(
+                    tile.frame,
+                    tile.node.category.as_deref(),
+                    style.filter.as_deref(),
+                    tile.node.id,
+                    cache.lit.as_ref(),
+                ) {
+                    0.16
+                } else {
+                    1.
+                };
                 window.paint_quad(fill(
                     rect,
                     if tile.frame {
-                        color("#354557")
+                        color("#354557").opacity(alpha)
                     } else {
-                        color(&fill_color)
+                        color(&fill_color).opacity(alpha)
                     },
                 ));
+                if !tile.frame && tile.width > 2. && tile.height > 2. {
+                    let inner = Bounds::new(
+                        rect.origin + point(px(1.), px(1.)),
+                        rect.size - size(px(2.), px(2.)),
+                    );
+                    // GPUI projects the diagonal onto the longest side, so adjust its stops.
+                    let w = f32::from(inner.size.width);
+                    let h = f32::from(inner.size.height);
+                    let span = w.hypot(h) / w.max(h);
+                    let stop = |t: f32| 0.5 + (t - 0.5) * span;
+                    window.paint_quad(fill(
+                        inner,
+                        linear_gradient(
+                            135.,
+                            linear_color_stop(hsla(0., 0., 1., 0.12 * alpha), stop(0.)),
+                            linear_color_stop(hsla(0., 0., 1., 0.), stop(0.45)),
+                        ),
+                    ));
+                    window.paint_quad(fill(
+                        inner,
+                        linear_gradient(
+                            135.,
+                            linear_color_stop(transparent_black(), stop(0.45)),
+                            linear_color_stop(hsla(0., 0., 0., 0.12 * alpha), stop(1.)),
+                        ),
+                    ));
+                }
                 let frame = tile.frame;
                 if if frame {
                     tile.width > 40. && tile.height > 19.
@@ -116,9 +182,9 @@ pub fn map(
                         ""
                     };
                     let ink = if frame {
-                        color("#eaf0f6")
+                        color("#eaf0f6").opacity(alpha)
                     } else {
-                        color(text_color(&fill_color))
+                        color(text_color(&fill_color)).opacity(alpha)
                     };
                     let measure =
                         |text: &str| f32::from(line(text, 12., ink, frame, window).width) as f64;
@@ -164,10 +230,7 @@ pub fn map(
                     });
                 }
             }
-            if let Some(index) = hover
-                && let Some(hovered) = cache.tiles.get(index)
-                && let Some(id) = hovered.node.id
-            {
+            if let Some(id) = style.hover {
                 for tile in &cache.tiles {
                     if tile.node.id == Some(id) || tile.branch == Some(id) {
                         let rect = Bounds::new(
@@ -185,11 +248,12 @@ pub fn map(
                     }
                 }
             }
-            if trace && cache.first_paint {
+            if trace {
                 eprintln!(
-                    "treemap_paint_ms={:.3} tile_count={}",
+                    "treemap_paint_ms={:.3} tile_count={} hover={}",
                     start.elapsed().as_secs_f64() * 1000.,
-                    cache.tiles.len()
+                    cache.tiles.len(),
+                    style.hover.is_some()
                 );
                 if !cache.startup_reported {
                     eprintln!(
@@ -199,7 +263,6 @@ pub fn map(
                     cache.startup_reported = true;
                 }
             }
-            cache.first_paint = false;
         },
     )
     .size_full()

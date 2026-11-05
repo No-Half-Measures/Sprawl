@@ -73,6 +73,10 @@ pub fn age(ms: u64) -> String {
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap_or_default()
         .as_millis() as u64;
+    format_age(ms, now)
+}
+
+pub fn format_age(ms: u64, now: u64) -> String {
     let minutes = now.saturating_sub(ms) / 60000;
     match minutes {
         0 => "just now".into(),
@@ -84,4 +88,91 @@ pub fn age(ms: u64) -> String {
         43200..525600 => format!("{} ago", count(minutes / 43200, "month")),
         _ => format!("{} ago", count(minutes / 525600, "year")),
     }
+}
+
+pub fn now() -> u64 {
+    chrono::Utc::now().timestamp_millis().max(0) as u64
+}
+pub fn format_delta(bytes: f64) -> String {
+    format!(
+        "{}{}",
+        if bytes > 0. {
+            "+"
+        } else if bytes < 0. {
+            "−"
+        } else {
+            ""
+        },
+        format_size(bytes.abs())
+    )
+}
+pub fn format_date(ms: u64) -> String {
+    if ms == 0 {
+        return String::new();
+    }
+    chrono::DateTime::from_timestamp_millis(ms as i64)
+        .map(|d| d.format("%-d %b %Y").to_string())
+        .unwrap_or_default()
+}
+pub fn format_scan_date(ms: u64) -> String {
+    let offset = chrono::DateTime::from_timestamp_millis(ms as i64)
+        .map(|d| *d.with_timezone(&chrono::Local).offset())
+        .unwrap_or_else(|| chrono::FixedOffset::east_opt(0).unwrap());
+    format_scan_date_at(ms, now(), offset)
+}
+pub const AGE_BUCKETS: [(&str, &str); 7] = [
+    ("<1 month", "#3fb68b"),
+    ("<6 months", "#8cc152"),
+    ("<1 year", "#e6c34a"),
+    ("<2 years", "#f08c3c"),
+    ("<5 years", "#e0533d"),
+    ("5+ years", "#a33a6b"),
+    ("Unknown", "#94a3b5"),
+];
+pub fn age_color(modified: u64, now: u64) -> &'static str {
+    if modified == 0 {
+        return AGE_BUCKETS[6].1;
+    }
+    let age = now as i128 - modified as i128;
+    let index = [30, 180, 365, 730, 1825]
+        .iter()
+        .position(|days| age < days * 86400000)
+        .unwrap_or(5);
+    AGE_BUCKETS[index].1
+}
+pub fn not_found_by_scan(total: u64, free: u64, scanned: u64) -> Option<u64> {
+    let gap = total.saturating_sub(free).saturating_sub(scanned);
+    (gap as f64 >= (1024_f64.powi(3)).max(total as f64 * 0.01)).then_some(gap)
+}
+pub fn is_drive_root(path: &str, mount: &str) -> bool {
+    path.trim_end_matches(['\\', '/'])
+        .eq_ignore_ascii_case(mount.trim_end_matches(['\\', '/']))
+}
+pub fn staleness(
+    saved: &sprawl_core::cache::SavedScan,
+    drive: Option<&sprawl_core::backend::Drive>,
+    now: u64,
+) -> (bool, Option<i128>) {
+    let delta = drive.zip(saved.drive_free).and_then(|(d, free)| {
+        let delta = d.free as i128 - free as i128;
+        ((delta.abs() as f64) >= (1024_f64.powi(3)).max(d.total as f64 * 0.01)).then_some(delta)
+    });
+    (now as i128 - saved.scanned_at as i128 > 7 * 86400000, delta)
+}
+
+pub fn format_scan_date_at(ms: u64, now: u64, offset: chrono::FixedOffset) -> String {
+    use chrono::Datelike;
+    let Some(date) = chrono::DateTime::from_timestamp_millis(ms as i64) else {
+        return String::new();
+    };
+    let Some(current) = chrono::DateTime::from_timestamp_millis(now as i64) else {
+        return String::new();
+    };
+    let date = date.with_timezone(&offset);
+    date.format(if date.year() == current.with_timezone(&offset).year() {
+        "%-d %b, %H:%M"
+    } else {
+        "%-d %b %Y, %H:%M"
+    })
+    .to_string()
 }

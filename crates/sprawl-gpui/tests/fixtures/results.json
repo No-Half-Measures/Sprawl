@@ -1,0 +1,509 @@
+{
+  "now": 1781524800000,
+  "offset": 7200,
+  "deltas": [
+    {
+      "value": -1073741824,
+      "result": "−1 GB"
+    },
+    {
+      "value": -1,
+      "result": "−1 B"
+    },
+    {
+      "value": 0,
+      "result": "0 B"
+    },
+    {
+      "value": 1,
+      "result": "+1 B"
+    },
+    {
+      "value": 1536,
+      "result": "+1.5 KB"
+    },
+    {
+      "value": 1073741824,
+      "result": "+1 GB"
+    }
+  ],
+  "dates": [
+    {
+      "value": 0,
+      "result": ""
+    },
+    {
+      "value": 1735776000000,
+      "result": "2 Jan 2025"
+    },
+    {
+      "value": 1781566200000,
+      "result": "15 Jun 2026"
+    },
+    {
+      "value": 1781524800000,
+      "result": "15 Jun 2026"
+    }
+  ],
+  "scanDates": [
+    {
+      "value": 0,
+      "result": "1 Jan 1970, 02:00"
+    },
+    {
+      "value": 1735776000000,
+      "result": "2 Jan 2025, 02:00"
+    },
+    {
+      "value": 1781566200000,
+      "result": "16 Jun, 01:30"
+    },
+    {
+      "value": 1781524800000,
+      "result": "15 Jun, 14:00"
+    }
+  ],
+  "ages": [
+    {
+      "value": 1781524860000,
+      "result": "just now"
+    },
+    {
+      "value": 1781524800000,
+      "result": "just now"
+    },
+    {
+      "value": 1781524740000,
+      "result": "1 minute ago"
+    },
+    {
+      "value": 1781521260000,
+      "result": "59 minutes ago"
+    },
+    {
+      "value": 1781521200000,
+      "result": "1 hour ago"
+    },
+    {
+      "value": 1781438460000,
+      "result": "23 hours ago"
+    },
+    {
+      "value": 1781438400000,
+      "result": "yesterday"
+    },
+    {
+      "value": 1781352000000,
+      "result": "2 days ago"
+    },
+    {
+      "value": 1780920060000,
+      "result": "6 days ago"
+    },
+    {
+      "value": 1780920000000,
+      "result": "1 week ago"
+    },
+    {
+      "value": 1778932860000,
+      "result": "4 weeks ago"
+    },
+    {
+      "value": 1778932800000,
+      "result": "1 month ago"
+    },
+    {
+      "value": 1749988860000,
+      "result": "12 months ago"
+    },
+    {
+      "value": 1749988800000,
+      "result": "1 year ago"
+    },
+    {
+      "value": 1718452800000,
+      "result": "2 years ago"
+    }
+  ],
+  "ageColors": [
+    {
+      "value": 0,
+      "result": "#94a3b5"
+    },
+    {
+      "value": 1781524800001,
+      "result": "#3fb68b"
+    },
+    {
+      "value": 1781524800000,
+      "result": "#3fb68b"
+    },
+    {
+      "value": 1779019200000,
+      "result": "#3fb68b"
+    },
+    {
+      "value": 1778932800000,
+      "result": "#8cc152"
+    },
+    {
+      "value": 1766059200000,
+      "result": "#8cc152"
+    },
+    {
+      "value": 1765972800000,
+      "result": "#e6c34a"
+    },
+    {
+      "value": 1750075200000,
+      "result": "#e6c34a"
+    },
+    {
+      "value": 1749988800000,
+      "result": "#f08c3c"
+    },
+    {
+      "value": 1718539200000,
+      "result": "#f08c3c"
+    },
+    {
+      "value": 1718452800000,
+      "result": "#e0533d"
+    },
+    {
+      "value": 1623931200000,
+      "result": "#e0533d"
+    },
+    {
+      "value": 1623844800000,
+      "result": "#a33a6b"
+    },
+    {
+      "value": 1349524800000,
+      "result": "#a33a6b"
+    }
+  ],
+  "gaps": [
+    {
+      "total": 107374182400,
+      "free": 10737418240,
+      "scanned": 85899345920,
+      "result": 10737418240
+    },
+    {
+      "total": 107374182400,
+      "free": 10737418240,
+      "scanned": 96636764160,
+      "result": null
+    },
+    {
+      "total": 1073741824000,
+      "free": 0,
+      "scanned": 1068373114880,
+      "result": null
+    },
+    {
+      "total": 1073741824000,
+      "free": 0,
+      "scanned": 1063004405760,
+      "result": 10737418240
+    },
+    {
+      "total": 1024,
+      "free": 0,
+      "scanned": 0,
+      "result": null
+    },
+    {
+      "total": 100,
+      "free": 0,
+      "scanned": 200,
+      "result": null
+    }
+  ],
+  "roots": [
+    {
+      "path": "C:\\",
+      "mount": "c:/",
+      "result": true
+    },
+    {
+      "path": "C:\\folder",
+      "mount": "C:\\",
+      "result": false
+    },
+    {
+      "path": "/mnt/data///",
+      "mount": "/mnt/data",
+      "result": true
+    },
+    {
+      "path": "D:",
+      "mount": "d:\\",
+      "result": true
+    }
+  ],
+  "stale": [
+    {
+      "saved": {
+        "version": 5,
+        "path": "X:\\fixture",
+        "scannedAt": 1781524800000,
+        "size": 0,
+        "files": 0,
+        "folders": 0,
+        "errors": 0,
+        "driveFree": 21474836480,
+        "driveTotal": 107374182400
+      },
+      "drive": null,
+      "result": {
+        "old": false,
+        "freeDelta": null
+      }
+    },
+    {
+      "saved": {
+        "version": 5,
+        "path": "X:\\fixture",
+        "scannedAt": 1781524800000,
+        "size": 0,
+        "files": 0,
+        "folders": 0,
+        "errors": 0,
+        "driveFree": 21474836480,
+        "driveTotal": 107374182400
+      },
+      "drive": {
+        "mount": "X:\\",
+        "label": "Fixture",
+        "total": 107374182400,
+        "free": 21474836480
+      },
+      "result": {
+        "old": false,
+        "freeDelta": null
+      }
+    },
+    {
+      "saved": {
+        "version": 5,
+        "path": "X:\\fixture",
+        "scannedAt": 1781524800000,
+        "size": 0,
+        "files": 0,
+        "folders": 0,
+        "errors": 0,
+        "driveFree": 21474836480,
+        "driveTotal": 107374182400
+      },
+      "drive": {
+        "mount": "X:\\",
+        "label": "Fixture",
+        "total": 107374182400,
+        "free": 22548578304
+      },
+      "result": {
+        "old": false,
+        "freeDelta": 1073741824
+      }
+    },
+    {
+      "saved": {
+        "version": 5,
+        "path": "X:\\fixture",
+        "scannedAt": 1781524800000,
+        "size": 0,
+        "files": 0,
+        "folders": 0,
+        "errors": 0,
+        "driveFree": 21474836480,
+        "driveTotal": 107374182400
+      },
+      "drive": {
+        "mount": "X:\\",
+        "label": "Fixture",
+        "total": 107374182400,
+        "free": 20401094656
+      },
+      "result": {
+        "old": false,
+        "freeDelta": -1073741824
+      }
+    },
+    {
+      "saved": {
+        "version": 5,
+        "path": "X:\\fixture",
+        "scannedAt": 1780920000000,
+        "size": 0,
+        "files": 0,
+        "folders": 0,
+        "errors": 0,
+        "driveFree": 21474836480,
+        "driveTotal": 107374182400
+      },
+      "drive": null,
+      "result": {
+        "old": false,
+        "freeDelta": null
+      }
+    },
+    {
+      "saved": {
+        "version": 5,
+        "path": "X:\\fixture",
+        "scannedAt": 1780920000000,
+        "size": 0,
+        "files": 0,
+        "folders": 0,
+        "errors": 0,
+        "driveFree": 21474836480,
+        "driveTotal": 107374182400
+      },
+      "drive": {
+        "mount": "X:\\",
+        "label": "Fixture",
+        "total": 107374182400,
+        "free": 21474836480
+      },
+      "result": {
+        "old": false,
+        "freeDelta": null
+      }
+    },
+    {
+      "saved": {
+        "version": 5,
+        "path": "X:\\fixture",
+        "scannedAt": 1780920000000,
+        "size": 0,
+        "files": 0,
+        "folders": 0,
+        "errors": 0,
+        "driveFree": 21474836480,
+        "driveTotal": 107374182400
+      },
+      "drive": {
+        "mount": "X:\\",
+        "label": "Fixture",
+        "total": 107374182400,
+        "free": 22548578304
+      },
+      "result": {
+        "old": false,
+        "freeDelta": 1073741824
+      }
+    },
+    {
+      "saved": {
+        "version": 5,
+        "path": "X:\\fixture",
+        "scannedAt": 1780920000000,
+        "size": 0,
+        "files": 0,
+        "folders": 0,
+        "errors": 0,
+        "driveFree": 21474836480,
+        "driveTotal": 107374182400
+      },
+      "drive": {
+        "mount": "X:\\",
+        "label": "Fixture",
+        "total": 107374182400,
+        "free": 20401094656
+      },
+      "result": {
+        "old": false,
+        "freeDelta": -1073741824
+      }
+    },
+    {
+      "saved": {
+        "version": 5,
+        "path": "X:\\fixture",
+        "scannedAt": 1780919999999,
+        "size": 0,
+        "files": 0,
+        "folders": 0,
+        "errors": 0,
+        "driveFree": 21474836480,
+        "driveTotal": 107374182400
+      },
+      "drive": null,
+      "result": {
+        "old": true,
+        "freeDelta": null
+      }
+    },
+    {
+      "saved": {
+        "version": 5,
+        "path": "X:\\fixture",
+        "scannedAt": 1780919999999,
+        "size": 0,
+        "files": 0,
+        "folders": 0,
+        "errors": 0,
+        "driveFree": 21474836480,
+        "driveTotal": 107374182400
+      },
+      "drive": {
+        "mount": "X:\\",
+        "label": "Fixture",
+        "total": 107374182400,
+        "free": 21474836480
+      },
+      "result": {
+        "old": true,
+        "freeDelta": null
+      }
+    },
+    {
+      "saved": {
+        "version": 5,
+        "path": "X:\\fixture",
+        "scannedAt": 1780919999999,
+        "size": 0,
+        "files": 0,
+        "folders": 0,
+        "errors": 0,
+        "driveFree": 21474836480,
+        "driveTotal": 107374182400
+      },
+      "drive": {
+        "mount": "X:\\",
+        "label": "Fixture",
+        "total": 107374182400,
+        "free": 22548578304
+      },
+      "result": {
+        "old": true,
+        "freeDelta": 1073741824
+      }
+    },
+    {
+      "saved": {
+        "version": 5,
+        "path": "X:\\fixture",
+        "scannedAt": 1780919999999,
+        "size": 0,
+        "files": 0,
+        "folders": 0,
+        "errors": 0,
+        "driveFree": 21474836480,
+        "driveTotal": 107374182400
+      },
+      "drive": {
+        "mount": "X:\\",
+        "label": "Fixture",
+        "total": 107374182400,
+        "free": 20401094656
+      },
+      "result": {
+        "old": true,
+        "freeDelta": -1073741824
+      }
+    }
+  ]
+}

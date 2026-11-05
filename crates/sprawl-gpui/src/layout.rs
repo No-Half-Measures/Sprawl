@@ -10,6 +10,8 @@ pub struct Node {
     #[serde(default)]
     pub allocated: u64,
     #[serde(default)]
+    pub modified: u64,
+    #[serde(default)]
     pub files: u64,
     #[serde(default)]
     pub folders: u64,
@@ -25,6 +27,7 @@ impl From<ViewNode> for Node {
             kind: n.kind,
             size: n.size,
             allocated: n.allocated,
+            modified: n.modified,
             files: n.files,
             folders: n.folders,
             category: n.category,

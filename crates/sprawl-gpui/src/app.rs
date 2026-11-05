@@ -1,11 +1,20 @@
+#[path = "header.rs"]
+mod header;
+#[path = "map_panel.rs"]
+mod map_panel;
+#[path = "panels.rs"]
+mod panels;
+use crate::input::{Changed, TextInput};
+use crate::preferences::{ColorBy, Preferences};
 use crate::{
     format::{age, count, format_size, middle_path, percent},
-    layout::{Node, hit},
+    layout::Node,
     state::{RequestTag, coalesce},
-    treemap::{self, MapCache},
+    treemap::MapCache,
 };
 use futures::{StreamExt, channel::mpsc};
 use gpui::{prelude::*, *};
+use panels::Panels;
 use sprawl_core::{
     Backend, BackendEvent,
     backend::Drive,
@@ -45,6 +54,19 @@ pub struct DiskApp {
     cache: Rc<RefCell<MapCache>>,
     hover: Option<usize>,
     pointer: Point<Pixels>,
+    pointer_tile: Option<usize>,
+    linked_hover: Option<usize>,
+    filter: Option<String>,
+    panels: Panels,
+    search_input: Entity<TextInput>,
+    files_input: Entity<TextInput>,
+    modified: bool,
+    snapshot: Option<SavedScan>,
+    scan_path: String,
+    prefs: Preferences,
+    prefs_path: PathBuf,
+    details_bounds: Rc<RefCell<Bounds<Pixels>>>,
+    dragging: bool,
     allocated: bool,
     skipped: u64,
     focus: FocusHandle,
@@ -59,6 +81,19 @@ impl DiskApp {
         startup: Instant,
         cx: &mut Context<Self>,
     ) -> Self {
+        let prefs_path = data.join("gpui-panels.json");
+        let prefs = Preferences::load(&prefs_path);
+        let search_input =
+            cx.new(|cx| TextInput::new("Search\u{2026} *.iso size>1GB type:video", cx));
+        let files_input = cx.new(|cx| TextInput::new("Filter\u{2026} *.log age>1y", cx));
+        cx.subscribe(&search_input, |this, _, _: &Changed, cx| {
+            this.search_changed(cx)
+        })
+        .detach();
+        cx.subscribe(&files_input, |this, _, _: &Changed, cx| {
+            this.files_changed(cx)
+        })
+        .detach();
         let (tx, mut events) = mpsc::unbounded();
         let backend = Backend::new(data, None, move |event| {
             let _ = tx.unbounded_send(event);
@@ -103,6 +138,19 @@ impl DiskApp {
             cache: Rc::default(),
             hover: None,
             pointer: point(px(0.), px(0.)),
+            pointer_tile: None,
+            linked_hover: None,
+            filter: None,
+            panels: Panels::new(),
+            search_input,
+            files_input,
+            modified: false,
+            snapshot: None,
+            scan_path: String::new(),
+            prefs,
+            prefs_path,
+            details_bounds: Rc::default(),
+            dragging: false,
             allocated: false,
             skipped: 0,
             focus: cx.focus_handle(),
@@ -187,6 +235,7 @@ impl DiskApp {
                 BackendEvent::ScanComplete(e) => {
                     self.scan = None;
                     self.allocated = e.data.has_allocated;
+                    self.modified = e.data.has_modified;
                     self.skipped = e.data.errors;
                     self.trail = vec![e.data.root.into()];
                     self.history.clear();
@@ -211,6 +260,9 @@ impl DiskApp {
             return;
         }
         self.requests.next();
+        self.panels.invalidate();
+        self.snapshot = None;
+        self.scan_path = path.clone();
         self.tree = None;
         self.hover = None;
         self.error.clear();
@@ -276,6 +328,9 @@ impl DiskApp {
                 match result {
                     Ok(scan) => {
                         this.allocated = scan.has_allocated;
+                        this.modified = scan.has_modified;
+                        this.scan_path = scan.saved.path.clone();
+                        this.snapshot = Some(scan.saved);
                         this.skipped = scan.errors;
                         this.trail = vec![scan.root.into()];
                         this.history.clear();
@@ -293,23 +348,57 @@ impl DiskApp {
             return;
         };
         let tag = self.requests.next();
-        self.hover = None;
+        self.set_hover(None, cx);
+        self.pointer_tile = None;
+        self.filter = None;
+        self.panels.reset();
         self.busy = true;
         self.tree = None;
+        self.error.clear();
         self.screen = Screen::Results;
         self.work(
-            move |b| b.get_tree(Some(id), 3, 100),
-            move |this, result, _| {
+            move |b| -> Result<_, String> {
+                Ok((
+                    b.get_tree(Some(id), 3, 100)?,
+                    b.get_largest_files(id, 50)?,
+                    b.get_type_breakdown(id)?,
+                ))
+            },
+            move |this, result, cx| {
                 if !this.requests.accepts(tag) {
                     return;
                 }
                 this.busy = false;
                 match result {
-                    Ok(tree) => {
+                    Ok((tree, files, types)) => {
                         this.tree = Some(Rc::new(tree.into()));
+                        this.panels.largest =
+                            files.into_iter().map(panels::FileRow::from).collect();
+                        this.panels.breakdown = types;
                         this.version += 1;
                     }
-                    Err(e) => this.fail(e),
+                    Err(e) => this.error = e,
+                }
+                this.search_changed(cx);
+                this.load_tab(cx);
+            },
+            cx,
+        );
+        self.work(
+            move |b| b.get_changes(id),
+            move |this, result, _| {
+                if !this.requests.accepts(tag) {
+                    return;
+                }
+                match result {
+                    Ok(changes) => {
+                        this.panels.grown = changes
+                            .as_ref()
+                            .map(|c| c.grown.iter().map(panels::FileRow::grown).collect())
+                            .unwrap_or_default();
+                        this.panels.changes = changes;
+                    }
+                    Err(e) => this.error = e,
                 }
             },
             cx,
@@ -335,9 +424,12 @@ impl DiskApp {
         if self.busy {
             return;
         }
-        let node = self
-            .hover
-            .and_then(|i| self.cache.borrow().tiles.get(i).map(|t| t.node.clone()));
+        let node = self.hover.and_then(|id| {
+            self.tree
+                .as_ref()
+                .and_then(|t| find_path(t, id))
+                .and_then(|p| p.last().cloned())
+        });
         if let Some(node) = node
             && node.kind == Kind::Dir
             && let Some(id) = node.id
@@ -354,9 +446,12 @@ impl DiskApp {
         &self,
         id: impl Into<ElementId>,
         text: impl Into<SharedString>,
+        enabled: bool,
         action: impl Fn(&mut Self, &mut Context<Self>) + 'static,
         cx: &Context<Self>,
     ) -> impl IntoElement {
+        let text = text.into();
+        let enabled = enabled && !self.busy;
         div()
             .id(id)
             .px_3()
@@ -365,12 +460,16 @@ impl DiskApp {
             .bg(rgb(0x293747))
             .border_1()
             .border_color(rgb(0x364454))
-            .cursor_pointer()
-            .hover(|s| s.bg(rgb(0x304156)))
-            .child(text.into())
+            .when(!enabled, |d| d.opacity(0.4))
+            .when(enabled, |d| {
+                d.cursor_pointer().hover(|s| s.bg(rgb(0x304156)))
+            })
+            .child(text)
             .on_click(cx.listener(move |this, _, _, cx| {
-                action(this, cx);
-                cx.notify();
+                if enabled {
+                    action(this, cx);
+                    cx.notify();
+                }
             }))
     }
 
@@ -389,7 +488,13 @@ impl DiskApp {
                     .justify_between()
                     .items_center()
                     .child(format!("Your drives · {} available", self.drives.len()))
-                    .child(self.button("pick", "Scan a folder…", |this, cx| this.pick(cx), cx)),
+                    .child(self.button(
+                        "pick",
+                        "Scan a folder…",
+                        true,
+                        |this, cx| this.pick(cx),
+                        cx,
+                    )),
             );
         if !self.error.is_empty() {
             body = body.child(div().text_color(rgb(0xf4b3b3)).child(self.error.clone()));
@@ -455,6 +560,7 @@ impl DiskApp {
                 actions = actions.child(self.button(
                     ("open-drive", index),
                     "Open last scan",
+                    true,
                     move |this, cx| this.open(saved.clone(), cx),
                     cx,
                 ));
@@ -462,6 +568,7 @@ impl DiskApp {
             actions = actions.child(self.button(
                 ("scan-drive", index),
                 "Scan drive",
+                true,
                 move |this, cx| this.start(mount.clone(), cx),
                 cx,
             ));
@@ -504,6 +611,7 @@ impl DiskApp {
                     .child(self.button(
                         ("open-folder", index),
                         "Open",
+                        true,
                         move |this, cx| this.open(saved.clone(), cx),
                         cx,
                     )),
@@ -555,6 +663,7 @@ impl DiskApp {
                 } else {
                     "Cancel scan"
                 },
+                !self.cancelling,
                 |this, cx| {
                     if this.cancelling {
                         return;
@@ -574,182 +683,26 @@ impl DiskApp {
             ))
             .into_any_element()
     }
-
-    fn results(&self, cx: &Context<Self>) -> AnyElement {
-        let mut crumbs = div()
-            .flex()
-            .gap_2()
-            .items_center()
-            .child(self.button("back", "←", |this, cx| this.back(cx), cx))
-            .child(self.button("up", "↑", |this, cx| this.up(cx), cx));
-        for (index, node) in self.trail.iter().enumerate() {
-            crumbs = crumbs.child(self.button(
-                ("crumb", index),
-                node.name.clone(),
-                move |this, cx| {
-                    if index + 1 < this.trail.len() {
-                        this.navigate(this.trail[..=index].to_vec(), cx);
-                    }
-                },
-                cx,
-            ));
-        }
-        let mut body = div()
-            .flex_1()
-            .min_h_0()
-            .flex()
-            .flex_col()
-            .gap_2()
-            .p_3()
-            .child(crumbs);
-        if let Some(node) = self.trail.last() {
-            body = body.child(format!(
-                "{} · {}",
-                format_size(node.size as f64),
-                count(node.files, "file")
-            ));
-        }
-        if self.skipped > 0 {
-            body = body.child(
-                div()
-                    .text_sm()
-                    .text_color(rgb(0xf2c97d))
-                    .child(format!("{} couldn't be read.", count(self.skipped, "item"))),
-            );
-        }
-        let mut surface = div()
-            .id("treemap")
-            .relative()
-            .flex_1()
-            .min_h_0()
-            .bg(rgb(0x131c26))
-            .overflow_hidden()
-            .on_mouse_move(cx.listener(|this, event: &MouseMoveEvent, _, cx| {
-                let cache = this.cache.borrow();
-                let position = event.position - cache.bounds.origin;
-                let hover = hit(
-                    &cache.tiles,
-                    f32::from(position.x) as f64,
-                    f32::from(position.y) as f64,
-                );
-                drop(cache);
-                this.pointer = position;
-                this.hover = hover;
-                cx.notify();
-            }))
-            .on_hover(cx.listener(|this, hovered: &bool, _, cx| {
-                if !hovered {
-                    this.hover = None;
-                    cx.notify();
-                }
-            }))
-            .on_click(cx.listener(|this, event: &ClickEvent, _, cx| {
-                if let ClickEvent::Mouse(event) = event
-                    && event.down.button == MouseButton::Left
-                    && event.up.button == MouseButton::Left
-                {
-                    let cache = this.cache.borrow();
-                    let position = event.up.position - cache.bounds.origin;
-                    let pressed = event.down.position - cache.bounds.origin;
-                    let hover = hit(
-                        &cache.tiles,
-                        f32::from(position.x) as f64,
-                        f32::from(position.y) as f64,
-                    );
-                    // GPUI checks the whole surface; also require the same tile.
-                    if hover
-                        != hit(
-                            &cache.tiles,
-                            f32::from(pressed.x) as f64,
-                            f32::from(pressed.y) as f64,
-                        )
-                    {
-                        return;
-                    }
-                    drop(cache);
-                    this.hover = hover;
-                    this.enter(cx);
-                }
-            }));
-        if let Some(tree) = &self.tree {
-            surface = surface.child(treemap::map(
-                tree.clone(),
-                self.version,
-                self.cache.clone(),
-                self.hover,
-                self.trace,
-                self.startup,
-            ));
-        } else {
-            surface = surface.child("Loading…");
-        }
-        if let Some(tile) = self
-            .hover
-            .and_then(|i| self.cache.borrow().tiles.get(i).cloned())
-        {
-            let cache = self.cache.borrow();
-            let left = f32::from(self.pointer.x)
-                .min((f32::from(cache.bounds.size.width) - 265.).max(4.))
-                .max(4.);
-            let top = f32::from(self.pointer.y)
-                .min((f32::from(cache.bounds.size.height) - 135.).max(4.))
-                .max(4.);
-            let mut tip = div()
-                .absolute()
-                .left(px(left + 14.))
-                .top(px(top + 14.))
-                .w(px(250.))
-                .p_3()
-                .rounded_md()
-                .bg(rgb(0x202c39))
-                .border_1()
-                .border_color(rgb(0x364454))
-                .flex()
-                .flex_col()
-                .gap_1()
-                .text_sm()
-                .child(tile.node.name.clone())
-                .child(format!(
-                    "{} · {}",
-                    format_size(tile.node.size as f64),
-                    percent(
-                        tile.node.size as f64,
-                        self.tree.as_ref().map_or(0., |t| t.size as f64)
-                    )
-                ));
-            if self.allocated {
-                tip = tip.child(format!(
-                    "{} on disk",
-                    format_size(tile.node.allocated as f64)
-                ));
-            }
-            tip = tip.child(format!(
-                "{} · {}",
-                count(tile.node.files, "file"),
-                count(tile.node.folders, "folder")
-            ));
-            if tile.node.id.is_none() {
-                tip = tip.child("Zoom into the containing folder for more detail.");
-            }
-            surface = surface.child(tip);
-        }
-        body.child(surface).into_any_element()
-    }
 }
 
 impl Render for DiskApp {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         self.drain(cx);
-        if !self.focus.is_focused(window) {
+        if window.focused(cx).is_none() {
             self.focus.focus(window);
         }
         let content = match self.screen {
             Screen::Home => self.home(cx),
             Screen::Scan => self.scanning(cx),
-            Screen::Results => self.results(cx),
+            Screen::Results => self.results(window, cx),
         };
         div()
             .size_full()
+            .when(
+                matches!(self.screen, Screen::Results)
+                    && f32::from(window.viewport_size().width) > 899.,
+                |d| d.min_h(px(600.)),
+            )
             .flex()
             .flex_col()
             .bg(rgb(0x18212c))
@@ -757,43 +710,83 @@ impl Render for DiskApp {
             .font_family("Segoe UI")
             .text_sm()
             .track_focus(&self.focus)
-            .on_key_down(cx.listener(|this, event: &KeyDownEvent, _, cx| {
-                if event.keystroke.key == "escape" {
-                    this.hover = None;
+            .on_mouse_down(
+                MouseButton::Left,
+                cx.listener(|this, _, window, _| this.focus.focus(window)),
+            )
+            .on_key_down(cx.listener(|this, event: &KeyDownEvent, window, cx| {
+                let key = &event.keystroke.key;
+                if key == "escape" {
+                    this.search_input.update(cx, |input, cx| input.set("", cx));
+                    this.pointer_tile = None;
+                    this.filter = None;
+                    this.set_hover(None, cx);
                     cx.notify();
-                } else if matches!(this.screen, Screen::Results)
-                    && (event.keystroke.key == "backspace"
-                        || (event.keystroke.modifiers.alt && event.keystroke.key == "left"))
-                {
-                    this.back(cx);
-                    cx.notify();
+                } else if matches!(this.screen, Screen::Results) {
+                    if event.keystroke.modifiers.control && key == "f" {
+                        this.search_input
+                            .update(cx, |input, cx| input.focus_select(window, cx));
+                        cx.stop_propagation();
+                    } else if !this.search_input.focus_handle(cx).is_focused(window)
+                        && !this.files_input.focus_handle(cx).is_focused(window)
+                    {
+                        if key == "backspace" || (event.keystroke.modifiers.alt && key == "left") {
+                            this.back(cx);
+                            cx.notify();
+                        }
+                        if event.keystroke.modifiers.alt && key == "up" {
+                            this.up(cx);
+                            cx.notify();
+                        }
+                    }
                 }
             }))
             .child(
                 div()
                     .h(px(48.))
                     .flex_shrink_0()
-                    .px_5()
+                    .px(px(22.))
                     .flex()
                     .items_center()
                     .justify_between()
                     .border_b_1()
                     .border_color(rgb(0x364454))
-                    .child(div().text_lg().child("Sprawl"))
-                    .child(self.button(
-                        "home",
-                        "Home",
-                        |this, cx| {
-                            if !this.busy && !matches!(this.screen, Screen::Scan) {
-                                this.requests.next();
-                                this.busy = false;
-                                this.screen = Screen::Home;
-                                this.hover = None;
-                                this.refresh(None, cx);
-                            }
-                        },
-                        cx,
-                    )),
+                    .child(
+                        div()
+                            .text_size(px(16.))
+                            .font_weight(FontWeight::SEMIBOLD)
+                            .child("Sprawl"),
+                    )
+                    .child(
+                        div()
+                            .flex()
+                            .gap_2()
+                            .when(matches!(self.screen, Screen::Results), |d| {
+                                d.child(self.button(
+                                    "rescan",
+                                    "Rescan",
+                                    true,
+                                    |this, cx| this.start(this.scan_path.clone(), cx),
+                                    cx,
+                                ))
+                            })
+                            .child(self.button(
+                                "home",
+                                "Home",
+                                !matches!(self.screen, Screen::Scan),
+                                |this, cx| {
+                                    if !this.busy && !matches!(this.screen, Screen::Scan) {
+                                        this.requests.next();
+                                        this.panels.invalidate();
+                                        this.busy = false;
+                                        this.screen = Screen::Home;
+                                        this.hover = None;
+                                        this.refresh(None, cx);
+                                    }
+                                },
+                                cx,
+                            )),
+                    ),
             )
             .child(content)
     }

@@ -1,6 +1,8 @@
 mod app;
 mod format;
+mod input;
 mod layout;
+mod preferences;
 mod state;
 #[cfg(test)]
 mod tests;
@@ -27,11 +29,12 @@ fn main() {
         }
     }
     Application::new().run(move |cx: &mut App| {
-        let bounds = Bounds::centered(None, size(px(1200.), px(800.)), cx);
+        input::bind(cx);
+        let bounds = Bounds::centered(None, size(px(1280.), px(800.)), cx);
         cx.open_window(
             WindowOptions {
                 window_bounds: Some(WindowBounds::Windowed(bounds)),
-                window_min_size: Some(size(px(640.), px(400.))),
+                window_min_size: Some(size(px(760.), px(600.))),
                 titlebar: Some(gpui::TitlebarOptions {
                     title: Some("Sprawl · GPUI".into()),
                     ..Default::default()

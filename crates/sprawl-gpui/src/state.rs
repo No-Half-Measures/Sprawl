@@ -38,6 +38,28 @@ pub fn coalesce(
     (progress, rest)
 }
 
+pub fn linked_hover(tree: &crate::layout::Node, hover: Option<usize>) -> Option<usize> {
+    let id = hover?;
+    tree.children
+        .iter()
+        .flatten()
+        .find(|child| contains(child, id))
+        .and_then(|child| child.id)
+        .or(Some(id))
+}
+fn contains(node: &crate::layout::Node, id: usize) -> bool {
+    node.id == Some(id) || node.children.iter().flatten().any(|n| contains(n, id))
+}
+pub fn tile_dim(
+    frame: bool,
+    category: Option<&str>,
+    filter: Option<&str>,
+    id: Option<usize>,
+    lit: Option<&std::collections::HashSet<Option<usize>>>,
+) -> bool {
+    (filter.is_some() && !frame && category != filter) || lit.is_some_and(|lit| !lit.contains(&id))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

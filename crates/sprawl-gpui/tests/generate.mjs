@@ -40,3 +40,28 @@ const shares = [[0,0],[1,10000],[1,1000],[12345,99999],[1,3],[100,100]].map(([va
 const counts = [0,1,2,1234567].map(value=>({value,result:model.count(value,'file')}));
 const paths = [['short',100],['abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ',20],['abcdef',0]].map(([value,limit])=>({value,limit,result:model.middlePath(value,limit)}));
 writeFileSync(`${out}/format.json`,JSON.stringify({labels:labelCases,colors,sizes,shares,counts,paths},null,2)+'\n');
+
+// Pin both the clock and timezone for date-sensitive reference functions.
+process.env.TZ = 'Etc/GMT-2';
+const RealDate = Date;
+const now = RealDate.UTC(2026, 5, 15, 12, 0);
+globalThis.Date = class extends RealDate {
+  constructor(...args) { super(...(args.length ? args : [now])); }
+  static now() { return now; }
+};
+
+const deltas = [-1073741824, -1, 0, 1, 1536, 1073741824].map(value=>({value,result:model.formatDelta(value)}));
+const times = [0, RealDate.UTC(2025,0,2), RealDate.UTC(2026,5,15,23,30), now];
+const dates = times.map(value=>({value,result:model.formatDate(value)}));
+const scanDates = times.map(value=>({value,result:model.formatScanDate(value)}));
+const ages = [-1,0,1,59,60,1439,1440,2880,10079,10080,43199,43200,525599,525600,1051200].map(minutes=>({value:now-minutes*60000,result:model.formatAge(now-minutes*60000,now)}));
+const ageColors = [0,now+1,...[0,29,30,179,180,364,365,729,730,1824,1825,5000].map(days=>now-days*86400000)].map(value=>({value,result:model.ageColor(value,now)}));
+const gaps = [[100*1024**3,10*1024**3,80*1024**3],[100*1024**3,10*1024**3,90*1024**3],[1000*1024**3,0,995*1024**3],[1000*1024**3,0,990*1024**3],[1024,0,0],[100,0,200]].map(([total,free,scanned])=>({total,free,scanned,result:model.notFoundByScan(total,free,scanned)}));
+const roots = [['C:\\','c:/'],['C:\\folder','C:\\'],['/mnt/data///','/mnt/data'],['D:','d:\\']].map(([path,mount])=>({path,mount,result:model.isDriveRoot(path,mount)}));
+const drive = {mount:'X:\\',label:'Fixture',total:100*1024**3,free:20*1024**3};
+const stale = [0,7*86400000,7*86400000+1].flatMap(elapsed=>[null,drive,{...drive,free:21*1024**3},{...drive,free:19*1024**3}].map(drive=> {
+  const saved = {version:5,path:'X:\\fixture',scannedAt:now-elapsed,size:0,files:0,folders:0,errors:0,driveFree:20*1024**3,driveTotal:100*1024**3};
+  return {saved,drive,result:model.staleness(saved,drive ?? undefined,now)};
+}));
+writeFileSync(`${out}/results.json`,JSON.stringify({now,offset:7200,deltas,dates,scanDates,ages,ageColors,gaps,roots,stale},null,2)+'\n');
+globalThis.Date = RealDate;
