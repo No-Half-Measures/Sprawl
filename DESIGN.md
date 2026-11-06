@@ -11,10 +11,10 @@ Sprawl shows where disk space goes. You pick a drive or folder, it scans, and th
 
 ## Stack
 
-- Tauri 2 desktop app (Windows first).
-- Backend: Rust. Parallel scanning uses `rayon`, and drive info comes from `sysinfo`.
-- Frontend: React 19 + TypeScript + Vite. The treemap layout comes from `d3-hierarchy` (squarified) and is drawn on a `<canvas>`. Styling is plain CSS with custom properties; there is no UI kit.
-- Plugins: `opener` (reveal in Explorer), `dialog` (folder picker and export save dialog), `single-instance` (forward launches to the existing window).
+- Native GPUI 0.2.2 desktop app. Windows is the main platform; Linux and macOS builds exist.
+- Shared Rust core: parallel scanning uses `rayon`, and drive info comes from `sysinfo`.
+- Rust UI with a squarified treemap drawn by GPUI. The app calls `Backend` directly and receives typed `BackendEvent` values on an in-process channel.
+- Platform folder/save dialogs, shell reveal, and single-instance launch forwarding.
 
 ## Backend
 
@@ -24,14 +24,14 @@ Sprawl shows where disk space goes. You pick a drive or folder, it scans, and th
 - Drive rescans load the latest saved tree and replay the existing NTFS USN journal, fetching changed MFT records and resident attribute-list extensions before using the same tree builder. Full MFT scans capture the journal checkpoint before reading; replay is idempotent. Missing or reset/truncated history, unsupported USN versions, more than 200,000 changed records, non-resident attribute lists, unknown reachable directories without a create event, incomplete prior scans, and any read or parsing uncertainty fall back to a full MFT scan, then the directory walk. The journal is never created or modified.
 - The scanner skips files it can't read (access denied and similar) and counts them in `errors`. They never fail the scan.
 - Each node stores its logical size (`len`), allocated size (size on disk), file count, and folder count. Folder totals, including allocated size, are rolled up after the walk; sorting uses logical size. The walk takes allocated size from `AllocationSize` on Windows and `blocks * 512` elsewhere, and counts every hard-link name. The MFT reader takes it from the unnamed `$DATA` attribute: 0 when resident, otherwise the total allocated size at offset 0x40 for compressed or sparse streams and the allocated size at 0x28 for the rest. Alternate data streams are ignored, as for size. A hard-linked record counts its allocated size only on its first node in arena order; later links get 0. Journal replay rebuilds records from the previous tree by summing allocated across a record's nodes, and requires a tree with allocated sizes and modified times. Trees track `has_allocated` and `has_modified`, false when loaded from formats predating those fields. Files store their last-write time as Unix milliseconds (`modified`, 0 when unknown); folders store the newest descendant file time, or 0 with no files. The walk uses Windows `LastWriteTime` or Unix `metadata.modified()`. MFT scans use the modification FILETIME at offset 8 of resident `$STANDARD_INFORMATION`; extension merges and journal replay preserve it, and every hard link shares it. FILETIME conversion clamps zero and pre-1970 values to 0. Deletion recomputes ancestor times from remaining children.
-- Progress goes out as a `scan-progress` event about every 100 ms: `{ files, folders, bytes, errors, currentPath }`. When the scan ends, a `scan-complete` event carries the root summary, or `scan-cancelled` if it was stopped.
+- Progress goes out as a `BackendEvent::ScanProgress` value about every 100 ms: `{ files, folders, bytes, errors, currentPath }`. When the scan ends, a `BackendEvent::ScanComplete` value carries the root summary, or `BackendEvent::ScanCancelled` if it was stopped.
 - The scan can be cancelled through a shared atomic flag. Only one scan runs at a time, and starting a new one replaces the previous result.
 
 ### In-memory tree
 - Nodes live in an arena (`Vec<Node>`) and point to each other by index. Each node stores only its own name, and full paths are rebuilt by following parent links. Children are sorted by size, largest first.
 - Deleting detaches a subtree, updates ancestor totals and ordering, and preserves arena IDs. Detached nodes and descendants report "This item was deleted." Updates clone the immutable tree outside the session lock and swap only into the same session tree; replacing the tree resets panel caches. Deletes are serialized and shell operations run on a blocking thread with the main window as owner.
 
-### Commands (IPC)
+### Backend API
 | Command | Returns |
 | --- | --- |
 | `list_drives()` | `[{ mount, label, total, free }]` |
@@ -51,9 +51,9 @@ Sprawl shows where disk space goes. You pick a drive or folder, it scans, and th
 | `search(nodeId, query, limit)` | `{ total, results: [{ id, name, relativePath, kind, size, allocated, modified, category? }] }`: every item under the node, excluding the node, that matches the query, with the `limit` largest (at most 1,000) by logical size, descending. `category` is present for files. Invalid queries return an error string. Runs on a blocking thread in one pass with a bounded heap; paths are built only for returned items. |
 | `export_scan(nodeId, path, format)` | Number of items written. Streams the node and every item under it, depth first in stored order, to `path` as `csv` or `json` on a blocking thread, through a temporary file in the same folder that is renamed into place, so a failed export leaves no file. |
 | `get_trail(nodeId)` | Shallow nodes from the root to the node, used to open folder search results |
-| `reveal_in_explorer(nodeId)` | Opens Explorer with the item selected |
+| `reveal_in_explorer(nodeId)` | Validates and returns the path for GPUI's platform reveal action |
 
-The IPC node shape is `{ id, name, kind: "dir" | "file" | "other", size, allocated, modified, files, folders, category?, children? }`. Largest files are `{ id, name, relativePath, size, allocated, modified, category }`. `scan-complete` carries `{ root, errors, hasAllocated, hasModified }`. When `hasAllocated` is false, `allocated` equals `size` and the UI hides size on disk.
+The backend node view is `{ id, name, kind: "dir" | "file" | "other", size, allocated, modified, files, folders, category?, children? }`. Largest files are `{ id, name, relativePath, size, allocated, modified, category }`. `BackendEvent::ScanComplete` carries `{ root, errors, hasAllocated, hasModified }`. When `hasAllocated` is false, `allocated` equals `size` and the UI hides size on disk.
 
 Both delete modes use `SHFileOperationW` with `FO_DELETE`, with COM initialized apartment-threaded on the blocking thread. Recycling uses `FOF_ALLOWUNDO | FOF_NOCONFIRMATION | FOF_WANTNUKEWARNING | FOF_NOERRORUI`; permanent deletion uses only `FOF_NOCONFIRMATION | FOF_NOERRORUI`, without undo or a Windows nuke warning. Absolute, double-NUL terminated paths have no extended prefix; paths of 260 UTF-16 units or more are refused. Synthetic IDs, scan roots, detached nodes, changed kinds, symlinks and junctions are refused. Link checks also cover ancestors and reuse the scanner classification, allowing cloud placeholders and dedup reparse points. Drive roots, SystemRoot, ProgramFiles, ProgramFiles(x86), ProgramData, USERPROFILE, its parent and their ancestors are protected; their contents are allowed. A missing path after the operation counts as success even after an error or abort. Cancellation leaves the tree unchanged. Partial folder deletion reports an error and requires a rescan.
 
@@ -64,7 +64,7 @@ Queries are space-separated terms, all of which must match; double quotes group 
 Each row has `path` (full path), `kind`, `size`, `allocated`, `files`, `folders` and `category` (empty for folders). CSV is UTF-8 with a BOM, a header row and CRLF line endings, quoting fields that contain a comma, quote, CR or LF and doubling quotes inside them. JSON is one array of objects, written row by row, with `null` for folder categories. Without known allocated sizes, CSV omits the `allocated` column and JSON sets it to `null`. When `has_modified` is true, CSV includes `modified` as ISO 8601 UTC seconds (`2025-01-31T12:34:56Z`), empty for unknown times; otherwise the column is omitted. JSON uses Unix milliseconds, or null when unknown or unavailable. Paths are built from a stack while walking. `sprawl-cli export` uses the same writer.
 
 ### File categories
-Files are grouped by extension into Video, Images, Audio, Documents, Archives, Code, Apps & system (exe/dll/sys/msi…), and Other. The mapping lives in `src/categories.json`. The backend embeds it and the frontend imports it, so both sides share the same IDs and colors.
+Files are grouped by extension into Video, Images, Audio, Documents, Archives, Code, Apps & system (exe/dll/sys/msi…), and Other. The mapping lives in `crates/sprawl-core/categories.json`. Core embeds it once and the app uses the same text, IDs and colors.
 
 ### Saved scans
 - Completed scans are saved in the app's local data directory under `scans/`, using streaming bincode + zstd and a JSON metadata sidecar written last. Cancelled and failed scans are never saved.
@@ -77,7 +77,7 @@ Files are grouped by extension into Video, Images, Audio, Documents, Archives, C
 
 ## UI
 
-Dark by default, with a light palette when the system theme is light. There is one accent color; everything else that has color is a file category. Labels are short, numbers are tabular, and sizes are formatted in binary units shown as KB/MB/GB/TB.
+Dark by default, with a light palette when the system theme is light. Colors distinguish file categories, age, warnings and changes. Labels are short, numbers are tabular, and sizes are formatted in binary units shown as KB/MB/GB/TB.
 
 ### 1. Home
 - Each drive gets a card with its letter and label, a used/free bar, the text "412 GB used of 1 TB", and a **Scan** button.
@@ -95,7 +95,7 @@ Dark by default, with a light palette when the system theme is light. There is o
 │ Videos — 182 GB · 4,210 files · 18% of drive                    │
 ├───────────────────────────────────────────┬──────────────────────┤
 │                                           │ Contents (sorted)    │
-│              TREEMAP (canvas)             │ ▇▇▇▇▇▇▇ Movies 120GB │
+│              TREEMAP (GPUI)               │ ▇▇▇▇▇▇▇ Movies 120GB │
 │                                           │ ▇▇▇     Clips   40GB │
 │                                           │ ▇       ...          │
 │                                           ├──────────────────────┤
@@ -105,8 +105,8 @@ Dark by default, with a light palette when the system theme is light. There is o
 └──────────────────────────────────────────────────────────────────┘
 ```
 - **Header:** back and up buttons, a clickable breadcrumb, a search field and an **Export…** button, then a summary line with size, size on disk when known ("182 GB · 170 GB on disk · 4,210 files"), file count, and share of the parent or drive.
-- **Treemap:** shows the current folder about 3 levels deep. Files are filled with their category color, and folders get a subtle frame with a name strip when there's room. Each rectangle's label shows the name and size when it fits. Hovering highlights a rectangle and shows a tooltip with name, size, % of current folder, size on disk when known, and item counts. Clicking a folder zooms into it, and right-clicking opens a menu with Open folder / Reveal in Explorer / Copy path / Delete… (except the scan root). Rectangles smaller than about 3 px aren't drawn individually. The canvas is DPI-aware and redraws when resized.
-- **Age colouring:** when dates are known, the Space map heading offers Type and Age. The guarded `sprawl.colorBy` localStorage preference persists the choice. Age fills leaf blocks (including collapsed folders, using their newest file time); folder frames retain the folder colour. A compact inline legend replaces the type-colour hint: <1 month #3fb68b, <6 months #8cc152, <1 year #e6c34a, <2 years #f08c3c, <5 years #e0533d, 5+ years #a33a6b, unknown #94a3b5. Months are 30 days and years are 365 days; future dates use the youngest bucket. The category hover filter still works.
+- **Treemap:** shows the current folder about 3 levels deep. Files are filled with their category color, and folders get a subtle frame with a name strip when there's room. Each rectangle's label shows the name and size when it fits. Hovering highlights a rectangle and shows a tooltip with name, size, % of current folder, size on disk when known, and item counts. Clicking a folder zooms into it, and right-clicking opens a menu with Open folder / Reveal in Explorer / Copy path / Delete… (except the scan root). Rectangles smaller than about 3 px aren't drawn individually. The treemap is DPI-aware and redraws when resized.
+- **Age colouring:** when dates are known, the Space map heading offers Type and Age. The `panels.json` preference persists the choice. Age fills leaf blocks (including collapsed folders, using their newest file time); folder frames retain the folder colour. A compact inline legend replaces the type-colour hint: <1 month #3fb68b, <6 months #8cc152, <1 year #e6c34a, <2 years #f08c3c, <5 years #e0533d, 5+ years #a33a6b, unknown #94a3b5. Months are 30 days and years are 365 days; future dates use the youngest bucket. The category hover filter still works.
 - **Contents list:** lists the direct children with a size bar, size, %, and item count. When size on disk is known, it is the size's tooltip. Hovering a row highlights the matching rectangle and the reverse also works. Clicking a folder row zooms into it.
 - **Delete…:** available in real-item context menus except the scan root, and through Delete on Contents, Largest files and Grown since rows. The alert dialog asks "Delete <name>?" and shows the name, full path, size and folder counts. Cancel is initially focused, followed by an outlined danger **Delete permanently** button and a primary **Move to Recycle Bin** button. The note says "Moving to the Recycle Bin lets you restore it later. Deleting permanently frees the space now and can't be undone." Choosing permanent deletion opens a second step titled "Delete permanently?", with "<size> will be deleted permanently. This can't be undone.", Back initially focused and a danger **Delete permanently** button. Back returns to the first step. Tab stays inside either step, Escape cancels the whole dialog unless running, and Enter activates the focused button. While running, all buttons are disabled and the active button shows Moving… or Deleting…. Success shows "Moved <name> to the Recycle Bin." or "Deleted <name> permanently." and refreshes all panels, trail and history sizes; detached history is dropped and navigation returns to the deepest attached ancestor. "Delete cancelled." is a notice; other errors use the error banner and close the dialog. Hover, menu and category filter state are cleared after success.
 - **Changes:** when an older scan exists, the header shows the signed size change and baseline date, or New/No change. Contents shows New or signed deltas of at least 1 MiB beside sizes, excluding synthetic aggregates, and a non-interactive removed-items row for direct children. The comparison request is separate from map and panel requests, and stale navigation responses are ignored.
@@ -124,7 +124,7 @@ Dark by default, with a light palette when the system theme is light. There is o
 
 ## Testing
 - Rust: unit tests run the scanner against a temp directory tree to check size rollup, counts, sorting, and `get_tree` trimming and aggregation. They also check that a symlink or junction isn't followed where one can be created.
-- Frontend: Vitest covers size formatting, category mapping, and treemap layout (areas proportional, nothing overlapping, small items culled).
+- App: Rust tests cover formatting, category mapping, treemap layout, input, request ordering and interaction state. Frozen fixtures preserve layout and formatting reference results.
 
 ## Out of scope (v1)
 - Moving files to other folders, duplicate detection.

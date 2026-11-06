@@ -1,11 +1,11 @@
 <p align="center">
-  <img src="public/sprawl.svg" width="96" alt="Sprawl logo">
+  <img src="crates/sprawl/assets/sprawl.svg" width="96" alt="Sprawl logo">
 </p>
 
 <h1 align="center">Sprawl</h1>
 
 <p align="center">
-  A disk-space visualizer for Windows that scans a 2-million-file system drive
+  A native disk-space visualizer that scans a 2-million-file Windows system drive
   in about 3.5 seconds.
 </p>
 
@@ -15,7 +15,7 @@ sorted list beside the map gives exact sizes. As administrator, Sprawl reads the
 NTFS master file table directly instead of opening every folder, which is where
 the speed comes from.
 
-Sprawl is built with [Tauri 2](https://tauri.app), Rust and React.
+Sprawl is built with Rust and GPUI 0.2.2. Windows is the main platform; Linux and macOS builds also exist.
 
 ## Features
 
@@ -137,7 +137,7 @@ second command scans `C:\Windows\System32` by default. Set
   [Rayon](https://github.com/rayon-rs/rayon) task per directory.
 - **Compact tree.** Nodes sit in one arena and store only their own name, not
   the full path. Sprawl rebuilds paths from parent links when it needs one.
-- **Small IPC payloads.** The UI asks the backend for only what it draws, three
+- **Bounded backend queries.** The UI asks the backend for only what it draws, three
   levels and 100 children per folder. Sprawl merges the rest of each folder into
   one "N smaller items" entry, so totals still add up.
 - **Fast reopen.** Sprawl stores saved scans as zstd-compressed bincode and
@@ -145,28 +145,29 @@ second command scans `C:\Windows\System32` by default. Set
 
 ## Getting started
 
-Sprawl is a Windows app. Download the `-setup.exe` installer from the
+Windows is the main platform. Download the `-setup.exe` installer from the
 [latest release](https://github.com/No-Half-Measures/Sprawl/releases/latest).
 It asks whether to install for everyone on the computer, which needs
 administrator rights and installs to Program Files, or only for you. Either
 way it puts `sprawl-cli` on PATH, the system PATH for everyone or your user
 PATH for you alone, and removes it again when you uninstall.
 
-To build from source, you need:
-
-- [Node.js](https://nodejs.org) 20.19+ or 22.12+
-- stable [Rust](https://rustup.rs)
-- the [Tauri prerequisites for Windows](https://tauri.app/start/prerequisites/),
-  which are the Microsoft C++ Build Tools and WebView2
+To build from source, install stable [Rust](https://rustup.rs). On Windows,
+install the MSVC C++ Build Tools and Windows SDK. Linux dependencies are listed
+in `packaging/linux/install-deps.sh`; macOS needs Xcode command line tools.
 
 ```text
-npm install
-npm run tauri dev      # run in development
-npm run tauri build    # build an installer under src-tauri/target/release/bundle
+cargo run -p sprawl
+cargo build --release --workspace
 ```
 
-`npm run dev` opens the UI in a plain browser, but it can't scan. Only the
-Tauri backend reads the disk.
+On Windows, install stock NSIS 3 to build an installer (after building release):
+
+```powershell
+packaging\windows\build-installer.ps1
+```
+
+The installer is written to `target/installer`.
 
 ## Usage
 
@@ -176,7 +177,7 @@ Tauri backend reads the disk.
 3. Right-click an item to open it, reveal it in Explorer, copy its path or
    delete it.
 
-**Search.** Type in the search field, or press Ctrl+F. Every term must match,
+**Search.** Type in the search field, or press Ctrl+F (Cmd+F on macOS). Every term must match,
 and names ignore case:
 
 | Term | Matches |
@@ -229,7 +230,7 @@ irm https://github.com/No-Half-Measures/Sprawl/releases/latest/download/sprawl-c
 Run the downloaded script with `-Uninstall` to remove it again. Each GitHub
 release also attaches the bare binaries, such as `sprawl-cli-windows-x64.exe`.
 To build it yourself, run `cargo build --release --bin sprawl-cli` in
-`src-tauri`.
+the repository root.
 
 ```text
 sprawl-cli scan C:\                     # scan, save, and report
@@ -260,7 +261,8 @@ Copy the `sprawl` folder into `~/.claude/skills/` for Claude Code or
 
 ## Limitations
 
-- Windows only.
+- Windows is the main platform; Linux and macOS builds exist. Windows admin, Explorer integration and deletion are unavailable on other systems.
+- Sprawl has no screen reader support: GPUI 0.2.2 has no accessibility layer.
 - The treemap, sorting and percentages use logical file sizes. Size on disk
   appears beside them. Scans saved by older versions of Sprawl don't have it,
   so it stays hidden until you rescan.
@@ -275,41 +277,36 @@ Copy the `sprawl` folder into `~/.claude/skills/` for Claude Code or
 ## Development
 
 ```text
-npm run build
-npm test
-cd crates/sprawl-core
-cargo test
-cargo clippy --all-targets -- -D warnings
-cargo fmt --check
-cd ../../src-tauri
-cargo clippy --all-targets -- -D warnings
-cargo fmt --check
+cargo fmt --all --check
+cargo clippy --workspace --all-targets -- -D warnings
+cargo test --workspace
+cargo clippy -p sprawl --all-targets --features dev-flags -- -D warnings
+cargo test -p sprawl --features dev-flags
+cargo build --release --bin sprawl-cli
 ```
+
+Binaries are under `target/release`. The CLI belongs to `sprawl-core`, so building
+it alone does not compile GPUI. `dev-flags` enables isolated data and saved-scan
+launch arguments, plus `--appearance light|dark` to override the system theme for manual checks.
 
 Tests create temporary fixtures. The link test tries a symlink, then a junction,
 and reports a skip if Windows allows neither. Tests that scan real drives or
 call the Windows shell to delete files carry `#[ignore]`. Run them with
 `--ignored`.
 
-[DESIGN.md](DESIGN.md) has the full product specification, IPC commands and
-saved-scan format. A few details live only here:
+[DESIGN.md](DESIGN.md) describes the product and saved-scan format. The app calls
+`sprawl_core::Backend` directly. Background workers send typed `BackendEvent`
+values through an in-process channel; scan IDs and request generations prevent
+late results from replacing a newer scan or navigation request.
 
-- `get_tree` caps depth at 8 and children per folder at 500, and returns about
-  8,000 nodes at most. Omitted siblings become one synthetic node with
-  `id: null`.
-- `get_largest_files` and `search` return at most 1,000 items.
-  `get_trail(nodeId)` returns the shallow nodes from the root to an item, so
-  folder search results can be opened. `get_type_breakdown` returns
-  all eight categories, including empty ones.
-- `start_scan` returns a scan ID, and every scan event carries it as `scanId`,
-  so the UI can ignore late events from an older scan. The events are
-  `scan-progress` with `{ scanId, files, folders, bytes, errors, currentPath }`,
-  `scan-complete` with `{ scanId, root, errors, hasAllocated }`,
-  `scan-cancelled` with `{ scanId }` and `scan-error` with
-  `{ scanId, message }`.
-- `get_node_path` backs Copy path, and `open_folder` opens a scanned directory.
-- [src/categories.json](src/categories.json) defines category IDs, labels,
-  colours and extensions. The Rust backend and the React frontend share it.
+- Tree queries cap depth at 8, children per folder at 500 and total nodes at
+  about 8,000. Omitted siblings become a synthetic node with `id: null`.
+- Largest-file and search queries return at most 1,000 items. Trail queries
+  return shallow ancestors, and type breakdown includes all eight categories.
+- [categories.json](crates/sprawl-core/categories.json) defines category IDs,
+  labels, colours and extensions. Core embeds it once for the backend and app.
+- Layout and formatting fixtures in `crates/sprawl/tests/fixtures` are frozen
+  references from the previous UI.
 
 ## License
 
