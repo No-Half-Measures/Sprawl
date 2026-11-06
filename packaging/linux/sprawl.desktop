@@ -1,0 +1,8 @@
+[Desktop Entry]
+Type=Application
+Name=Sprawl
+Comment=Disk space visualizer
+Exec=sprawl %f
+Icon=sprawl
+Terminal=false
+Categories=Utility;System;
