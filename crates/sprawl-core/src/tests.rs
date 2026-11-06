@@ -793,7 +793,10 @@ fn comparison_matches_names_and_kinds_and_scopes_removals() {
             ("inside", None)
         ]
     );
-    assert_eq!(root.grown[0].relative_path, r"nested\new");
+    assert_eq!(
+        root.grown[0].relative_path,
+        format!("nested{}new", std::path::MAIN_SEPARATOR)
+    );
     let nested = comparison.view(&current, 1).unwrap();
     assert_eq!((nested.removed.items, nested.removed.bytes), (1, 4));
     assert_eq!(nested.grown[0].relative_path, "new");
@@ -1573,9 +1576,12 @@ fn smoke_real_directory() {
 
 #[test]
 fn cli_reads_the_app_scan_folder() {
-    let config: serde_json::Value =
-        serde_json::from_str(include_str!("../../../src-tauri/tauri.conf.json")).unwrap();
-    assert_eq!(config["identifier"], crate::cli::IDENTIFIER);
+    let installer = include_str!("../../../packaging/windows/installer.nsi");
+    assert!(
+        installer
+            .lines()
+            .any(|line| line == format!("!define BUNDLEID \"{}\"", crate::cli::IDENTIFIER))
+    );
 }
 
 #[test]

@@ -21,9 +21,7 @@ pub struct Category {
 
 pub fn categories() -> &'static [Category] {
     static CATEGORIES: OnceLock<Vec<Category>> = OnceLock::new();
-    CATEGORIES.get_or_init(|| {
-        serde_json::from_str(include_str!("../../../src/categories.json")).unwrap_or_default()
-    })
+    CATEGORIES.get_or_init(|| serde_json::from_str(crate::CATEGORIES_JSON).unwrap_or_default())
 }
 
 pub fn category(name: &str) -> u8 {
@@ -844,6 +842,7 @@ impl Tree {
     }
 }
 
+#[cfg(any(windows, test))]
 pub(crate) fn filetime_ms(ticks: u64) -> u64 {
     ticks.saturating_sub(116_444_736_000_000_000) / 10_000
 }

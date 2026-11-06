@@ -1,15 +1,18 @@
-use crate::scanner::{self, Counters, JournalCheckpoint, Kind, Node, Progress, Tree};
+use crate::scanner::{self, JournalCheckpoint, Kind, Node, Tree};
+#[cfg(windows)]
+use crate::scanner::{Counters, Progress};
 use std::{
     collections::{BTreeMap, BTreeSet},
-    io,
-    path::{Path, PathBuf},
+    path::PathBuf,
     sync::atomic::{AtomicBool, Ordering},
 };
 
 #[cfg(windows)]
 use std::{
     fs::File,
+    io,
     os::windows::io::{AsRawHandle, FromRawHandle, OwnedHandle},
+    path::Path,
 };
 #[cfg(windows)]
 use windows_sys::Win32::{
