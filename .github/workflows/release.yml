@@ -2,84 +2,90 @@ name: Release
 on:
   push:
     tags: ['v*']
-
+  workflow_dispatch:
+permissions:
+  contents: read
 jobs:
   build:
-    permissions:
-      contents: write
     strategy:
       fail-fast: false
       matrix:
-        include:
-          - platform: windows-latest
-          - platform: ubuntu-22.04
-          - platform: macos-latest
-            args: --target universal-apple-darwin
-    runs-on: ${{ matrix.platform }}
+        os: [windows-latest, ubuntu-22.04, macos-latest]
+    runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
-        with:
-          node-version: lts/*
-          cache: npm
       - uses: dtolnay/rust-toolchain@stable
         with:
-          targets: ${{ matrix.platform == 'macos-latest' && 'aarch64-apple-darwin,x86_64-apple-darwin' || '' }}
+          targets: ${{ runner.os == 'macOS' && 'aarch64-apple-darwin,x86_64-apple-darwin' || '' }}
       - uses: swatinem/rust-cache@v2
-        with:
-          workspaces: src-tauri
-      - name: Install Linux dependencies
-        if: matrix.platform == 'ubuntu-22.04'
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf
-      - run: npm ci
-      - name: Build CLI
+      - if: runner.os == 'Linux'
+        run: bash packaging/linux/install-deps.sh
+      - name: Version
         shell: bash
-        working-directory: src-tauri
         run: |
-          case "$RUNNER_OS" in
-            Windows)
-              cargo build --release --bin sprawl-cli
-              cp target/release/sprawl-cli.exe sprawl-cli-windows-x64.exe
-              cp ../scripts/install-cli.ps1 sprawl-cli-install.ps1
-              ;;
-            Linux)
-              cargo build --release --bin sprawl-cli
-              tar -czf sprawl-cli-linux-x64.tar.gz -C target/release sprawl-cli
-              ;;
-            macOS)
-              for target in aarch64-apple-darwin x86_64-apple-darwin; do
-                cargo build --release --bin sprawl-cli --target "$target"
-              done
-              # The Tauri bundler expects every bin target in the universal dir.
-              mkdir -p target/universal-apple-darwin/release
-              lipo -create -output target/universal-apple-darwin/release/sprawl-cli \
-                target/aarch64-apple-darwin/release/sprawl-cli \
-                target/x86_64-apple-darwin/release/sprawl-cli
-              tar -czf sprawl-cli-macos-universal.tar.gz \
-                -C target/universal-apple-darwin/release sprawl-cli
-              ;;
-          esac
-      - uses: tauri-apps/tauri-action@v0
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        with:
-          tagName: ${{ github.ref_name }}
-          releaseName: Sprawl ${{ github.ref_name }}
-          releaseBody: See the assets below to download and install Sprawl.
-          releaseDraft: true
-          args: ${{ matrix.args }}
-      - name: Upload CLI
-        shell: bash
-        working-directory: src-tauri
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: gh release upload "$GITHUB_REF_NAME" sprawl-cli-* --clobber
-      - name: Upload agent skill
+          version=$(sed -n '/^\[workspace.package\]/,/^\[/p' Cargo.toml | grep '^version *=' | sed 's/.*"\([^"]*\)".*/\1/')
+          echo "VERSION=$version" >> "$GITHUB_ENV"
+          mkdir -p target/assets
+      - name: Windows packages
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          choco install nsis -y --no-progress
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+          cargo build --release --workspace --locked
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+          ./packaging/windows/build-installer.ps1 -Version $env:VERSION -OutDir target/assets
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+          Copy-Item target/release/sprawl-cli.exe target/assets/sprawl-cli-windows-x64.exe
+          Copy-Item scripts/install-cli.ps1 target/assets/sprawl-cli-install.ps1
+      - name: Linux packages
         if: runner.os == 'Linux'
+        shell: bash
+        run: |
+          cargo build --release --workspace --locked
+          mkdir -p target/linux-package
+          cp target/release/sprawl target/release/sprawl-cli packaging/linux/sprawl.desktop crates/sprawl/assets/icon.png LICENSE NOTICE target/linux-package/
+          tar -czf "target/assets/Sprawl_${VERSION}_linux-x64.tar.gz" -C target/linux-package .
+          tar -czf target/assets/sprawl-cli-linux-x64.tar.gz -C target/release sprawl-cli
+          (cd skills && zip -r ../target/assets/sprawl-skill.zip sprawl)
+      - name: macOS packages
+        if: runner.os == 'macOS'
+        shell: bash
+        run: |
+          for target in aarch64-apple-darwin x86_64-apple-darwin; do
+            cargo build --release --workspace --locked --target "$target"
+          done
+          mkdir -p target/universal target/macos/Sprawl.app/Contents/{MacOS,Resources}
+          for binary in sprawl sprawl-cli; do
+            lipo -create -output "target/universal/$binary" "target/aarch64-apple-darwin/release/$binary" "target/x86_64-apple-darwin/release/$binary"
+          done
+          cp target/universal/sprawl target/macos/Sprawl.app/Contents/MacOS/
+          cp crates/sprawl/assets/icon.icns target/macos/Sprawl.app/Contents/Resources/
+          sed "s/@VERSION@/$VERSION/g" packaging/macos/Info.plist > target/macos/Sprawl.app/Contents/Info.plist
+          codesign --force --deep --sign - target/macos/Sprawl.app
+          cp target/universal/sprawl-cli LICENSE NOTICE target/macos/
+          hdiutil create -volname Sprawl -srcfolder target/macos -ov -format UDZO "target/assets/Sprawl_${VERSION}_universal.dmg"
+          tar -czf target/assets/sprawl-cli-macos-universal.tar.gz -C target/universal sprawl-cli
+      - uses: actions/upload-artifact@v4
+        with:
+          name: packages-${{ runner.os }}
+          path: target/assets/*
+          if-no-files-found: error
+  release:
+    needs: build
+    if: startsWith(github.ref, 'refs/tags/')
+    runs-on: ubuntu-22.04
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: assets
+          merge-multiple: true
+      - name: Draft release
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_REPO: ${{ github.repository }}
         run: |
-          (cd skills && zip -r ../sprawl-skill.zip sprawl)
-          gh release upload "$GITHUB_REF_NAME" sprawl-skill.zip --clobber
+          gh release create "$GITHUB_REF_NAME" --draft --title "Sprawl $GITHUB_REF_NAME" --notes "See the assets below to download and install Sprawl."
+          gh release upload "$GITHUB_REF_NAME" assets/*
