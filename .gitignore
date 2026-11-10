@@ -24,3 +24,9 @@ dist-ssr
 *.sln
 *.sw?
 .verify/
+
+# Rust build output
+target/
+
+# Local tool scratch
+.codex-review-before/
