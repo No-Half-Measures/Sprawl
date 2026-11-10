@@ -326,7 +326,7 @@ pub fn load(dir: &Path, path: &str) -> Result<(Tree, SavedScan), String> {
     })();
     result.map_err(|_| {
         remove(dir, &key);
-        OPEN_ERROR.into()
+        crate::i18n::t("errors.savedScan")
     })
 }
 

@@ -18,8 +18,9 @@ impl Format {
         match text.to_ascii_lowercase().as_str() {
             "csv" => Ok(Self::Csv),
             "json" => Ok(Self::Json),
-            _ => Err(format!(
-                "Unknown export format \"{text}\". Use csv or json."
+            _ => Err(crate::i18n::with_args(
+                "errors.exportFormat",
+                &[("text", text)],
             )),
         }
     }
@@ -49,9 +50,12 @@ struct Row<'a> {
 /// order, and returns the number of items. A failed export leaves no file behind.
 pub fn export(tree: &Tree, id: usize, path: &Path, format: Format) -> Result<u64, String> {
     let root = tree.path(id)?.to_string_lossy().into_owned();
-    let name = path
-        .file_name()
-        .ok_or_else(|| format!("Choose a file to export to, not {}.", path.display()))?;
+    let name = path.file_name().ok_or_else(|| {
+        crate::i18n::with_args(
+            "errors.exportFile",
+            &[("path", &path.display().to_string())],
+        )
+    })?;
     let mut temp_name = name.to_owned();
     temp_name.push(format!(".{}.tmp", std::process::id()));
     let temp = path.with_file_name(temp_name);
@@ -65,7 +69,10 @@ pub fn export(tree: &Tree, id: usize, path: &Path, format: Format) -> Result<u64
         .and_then(|count| fs::rename(&temp, path).map(|()| count));
     result.map_err(|e| {
         let _ = fs::remove_file(&temp);
-        format!("Could not export to {}: {e}", path.display())
+        crate::i18n::with_args(
+            "errors.export",
+            &[("path", &path.display().to_string()), ("e", &e.to_string())],
+        )
     })
 }
 

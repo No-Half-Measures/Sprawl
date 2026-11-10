@@ -1,3 +1,4 @@
+import { t, intlLocale } from './i18n';
 import { count, formatSize, middlePath, type Progress } from './model';
 
 interface Props {
@@ -22,16 +23,16 @@ export default function ScanScreen({
       >
         ▱
       </span>
-      <h1>Mapping your space</h1>
-      <p>Finding the pieces that make up this folder.</p>
+      <h1>{t('scan.title')}</h1>
+      <p>{t('scan.description')}</p>
       <div className="scan-counters">
         <div>
-          <strong>{progress.files.toLocaleString()}</strong>
-          <span>{progress.files === 1 ? 'file' : 'files'} found</span>
+          <strong>{progress.files.toLocaleString(intlLocale)}</strong>
+          <span>{t('scan.filesFound', { count: progress.files })}</span>
         </div>
         <div>
           <strong>{formatSize(progress.bytes)}</strong>
-          <span>size found</span>
+          <span>{t('scan.sizeFound')}</span>
         </div>
       </div>
       <div className="indeterminate">
@@ -51,7 +52,7 @@ export default function ScanScreen({
         disabled={cancelling}
         onClick={() => void cancel()}
       >
-        {cancelling ? 'Cancelling…' : 'Cancel scan'}
+        {cancelling ? t('scan.cancelling') : t('scan.cancel')}
       </button>
     </section>
   );

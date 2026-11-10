@@ -91,7 +91,7 @@ pub(super) fn quote_arg(arg: &std::ffi::OsStr) -> Vec<u16> {
 
 #[cfg(not(windows))]
 pub fn relaunch() -> Result<(), String> {
-    Err("Restarting as administrator is only supported on Windows.".into())
+    Err(crate::i18n::t("errors.adminWindows"))
 }
 
 #[cfg(windows)]
@@ -106,9 +106,9 @@ pub fn relaunch() -> Result<(), String> {
     };
 
     let exe = std::env::current_exe()
-        .map_err(|e| format!("Could not locate the Sprawl executable: {e}"))?;
+        .map_err(|e| crate::i18n::with_args("errors.executable", &[("e", &e.to_string())]))?;
     let dir = std::env::current_dir()
-        .map_err(|e| format!("Could not read the working directory: {e}"))?;
+        .map_err(|e| crate::i18n::with_args("errors.workingDirectory", &[("e", &e.to_string())]))?;
     let exe: Vec<_> = exe.as_os_str().encode_wide().chain(Some(0)).collect();
     let dir: Vec<_> = dir.as_os_str().encode_wide().chain(Some(0)).collect();
     let mut parameters = vec![];
@@ -138,9 +138,12 @@ pub fn relaunch() -> Result<(), String> {
     if unsafe { ShellExecuteExW(&mut info) } == 0 {
         let error = io::Error::last_os_error();
         if error.raw_os_error() == Some(ERROR_CANCELLED as i32) {
-            return Err("Administrator access was declined.".into());
+            return Err(crate::i18n::t("errors.adminDeclined"));
         }
-        return Err(format!("Could not restart as administrator: {error}"));
+        return Err(crate::i18n::with_args(
+            "errors.restartAdmin",
+            &[("error", &error.to_string())],
+        ));
     }
     Ok(())
 }
@@ -162,8 +165,9 @@ pub fn wait_for_parent() -> Result<(), String> {
         return if error.raw_os_error() == Some(ERROR_INVALID_PARAMETER as i32) {
             Ok(())
         } else {
-            Err(format!(
-                "Could not wait for the previous Sprawl instance: {error}"
+            Err(crate::i18n::with_args(
+                "errors.waitParent",
+                &[("error", &error.to_string())],
             ))
         };
     }
@@ -172,6 +176,6 @@ pub fn wait_for_parent() -> Result<(), String> {
     if result == WAIT_OBJECT_0 {
         Ok(())
     } else {
-        Err("The previous Sprawl instance did not exit.".into())
+        Err(crate::i18n::t("errors.parentRunning"))
     }
 }

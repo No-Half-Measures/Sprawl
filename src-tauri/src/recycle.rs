@@ -1,9 +1,6 @@
 use crate::scanner::{self, Kind};
 use std::{fs, path::Path};
 
-const CHANGED: &str = "This item has changed. Rescan to refresh it.";
-const PROTECTED: &str = "Windows needs this folder, so Sprawl won't delete it.";
-
 fn normalized(path: &str) -> String {
     let path = path.replace('/', "\\").to_lowercase();
     let prefix = if path.starts_with(r"\\") { r"\\" } else { "" };
@@ -43,20 +40,22 @@ pub fn check(path: &Path, kind: Kind) -> Result<(), String> {
         directories.push(parent.to_string_lossy().into_owned());
     }
     if protected(&path.to_string_lossy(), &directories) {
-        return Err(PROTECTED.into());
+        return Err(crate::i18n::t("errors.protected"));
     }
-    let metadata = fs::symlink_metadata(path).map_err(|_| CHANGED.to_string())?;
+    let metadata = fs::symlink_metadata(path).map_err(|_| crate::i18n::t("errors.itemChanged"))?;
     if scanner::excluded(&metadata)
         || !matches!(
             (kind, metadata.is_dir(), metadata.is_file()),
             (Kind::Dir, true, false) | (Kind::File, false, true)
         )
     {
-        return Err(CHANGED.into());
+        return Err(crate::i18n::t("errors.itemChanged"));
     }
     for ancestor in path.ancestors().skip(1) {
-        if scanner::excluded(&fs::symlink_metadata(ancestor).map_err(|_| CHANGED.to_string())?) {
-            return Err(CHANGED.into());
+        if scanner::excluded(
+            &fs::symlink_metadata(ancestor).map_err(|_| crate::i18n::t("errors.itemChanged"))?,
+        ) {
+            return Err(crate::i18n::t("errors.itemChanged"));
         }
     }
     Ok(())
@@ -76,19 +75,21 @@ fn outcome(
     }
     if partial {
         return Err(if permanent {
-            "Some items couldn't be deleted. Rescan to see what's left."
+            crate::i18n::t("errors.partialDelete")
         } else {
-            "Some items couldn't be moved to the Recycle Bin. Rescan to see what's left."
-        }
-        .into());
+            crate::i18n::t("errors.partialRecycle")
+        });
     }
     if aborted {
-        return Err("Delete cancelled.".into());
+        return Err(crate::i18n::t("errors.deleteCancelled"));
     }
     Err(if permanent {
-        format!("Couldn't delete {name}.")
+        crate::i18n::with_args("errors.deleteName", &[("name", name)])
     } else {
-        format!("Couldn't move {name} to the Recycle Bin. (Shell code {code})")
+        crate::i18n::with_args(
+            "errors.recycleName",
+            &[("name", name), ("code", &code.to_string())],
+        )
     })
 }
 
@@ -100,11 +101,10 @@ pub fn delete_item(
     permanent: bool,
 ) -> Result<(), String> {
     Err(if permanent {
-        "Deleting is only supported on Windows."
+        crate::i18n::t("errors.deleteWindows")
     } else {
-        "The Recycle Bin is only supported on Windows."
-    }
-    .into())
+        crate::i18n::t("errors.recycleWindows")
+    })
 }
 
 #[cfg(windows)]
@@ -114,14 +114,13 @@ fn source(path: &Path, permanent: bool) -> Result<Vec<u16>, String> {
     let mut source: Vec<_> = path.as_os_str().encode_wide().collect();
     if source.len() >= windows_sys::Win32::Foundation::MAX_PATH as usize {
         return Err(if permanent {
-            "This path is too long to delete."
+            crate::i18n::t("errors.deleteLong")
         } else {
-            "This path is too long for the Recycle Bin."
-        }
-        .into());
+            crate::i18n::t("errors.recycleLong")
+        });
     }
     if !path.is_absolute() || source.iter().any(|&unit| matches!(unit, 0 | 42 | 63)) {
-        return Err(CHANGED.into());
+        return Err(crate::i18n::t("errors.itemChanged"));
     }
     source.extend([0, 0]);
     Ok(source)
@@ -166,9 +165,12 @@ pub fn delete_item(path: &Path, name: &str, owner: usize, permanent: bool) -> Re
     let initialized = unsafe { CoInitializeEx(std::ptr::null(), COINIT_APARTMENTTHREADED as u32) };
     if initialized < 0 {
         return Err(if permanent {
-            format!("Couldn't delete {name}.")
+            crate::i18n::with_args("errors.deleteName", &[("name", name)])
         } else {
-            format!("Couldn't initialize the Recycle Bin. ({initialized:#x})")
+            crate::i18n::with_args(
+                "errors.recycleInit",
+                &[("code", &format!("{initialized:#x}"))],
+            )
         });
     }
     let mut operation = SHFILEOPSTRUCTW {

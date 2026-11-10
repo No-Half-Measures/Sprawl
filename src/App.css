@@ -38,6 +38,7 @@ strong { font-weight: 600; }
 .settings-panel label { display: flex; align-items: flex-start; gap: 8px; font-size: 13px; line-height: 1.5; }
 .settings-panel label + label { margin-top: 12px; }
 .settings-panel input { flex-shrink: 0; margin: 3px 0 0; accent-color: var(--accent); }
+.settings-panel select { margin-left: auto; max-width: 70%; padding: 4px 8px; color: var(--text); background: var(--surface); border: 1px solid var(--line); border-radius: 4px; font: inherit; }
 .banner { display: flex; align-items: center; justify-content: space-between; padding: 9px 28px; background: var(--raised); border-bottom: 1px solid var(--line); gap: 20px; }
 .banner.error { color: var(--error); }
 .banner button { padding: 0 7px; background: transparent; font-size: 18px; border: 0; }

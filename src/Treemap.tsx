@@ -1,3 +1,4 @@
+import { t, intlLocale } from './i18n';
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { ageColor, categoryColor, count, formatSize, percent, type TreeNode } from './model';
 import { fitLabel, layoutTree, textColor, wrapLabel, type Tile } from './layout';
@@ -129,7 +130,7 @@ export default function Treemap({ tree, showAllocated = false, colorBy = 'type',
         ctx.strokeRect(tile.x + 1, tile.y + 1, tile.width - 2, tile.height - 2);
       }
     }
-  }, [tiles, size, hover, filter, lit, themeVersion, colorBy]);
+  }, [tiles, size, hover, filter, lit, themeVersion, colorBy, intlLocale]);
   const hit = (event: React.MouseEvent) => {
     const rect = canvas.current!.getBoundingClientRect();
     const x = event.clientX - rect.left;
@@ -145,7 +146,7 @@ export default function Treemap({ tree, showAllocated = false, colorBy = 'type',
     <div className="map-surface">
       <canvas
         ref={canvas}
-        aria-label="Disk usage treemap. Use the contents list to navigate with the keyboard."
+        aria-label={t('map.accessible')}
         onMouseMove={e => {
           const tile = hit(e);
           onHover(tile?.node.id ?? null);
@@ -175,12 +176,12 @@ export default function Treemap({ tree, showAllocated = false, colorBy = 'type',
         >
           <strong>{tip.tile.node.name}</strong>
           <span>{formatSize(tip.tile.node.size)} · {percent(tip.tile.node.size, tree.size)}</span>
-          {showAllocated && <small>{formatSize(tip.tile.node.allocated)} on disk</small>}
+          {showAllocated && <small>{t('results.onDisk', { size: formatSize(tip.tile.node.allocated) })}</small>}
           <small>
             {count(tip.tile.node.files, 'file')} · {count(tip.tile.node.folders, 'folder')}
           </small>
           {tip.tile.node.id === null && (
-            <small>Zoom into the containing folder for more detail.</small>
+            <small>{t('map.zoomHint')}</small>
           )}
         </div>
       )}

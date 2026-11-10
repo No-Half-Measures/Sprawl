@@ -1,3 +1,4 @@
+import { t, intlLocale, activeLocale, readPreference, setPreference, type LanguagePreference } from './i18n';
 import { useEffect, useRef, useState } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import { listen, type UnlistenFn } from '@tauri-apps/api/event';
@@ -8,7 +9,6 @@ import ScanScreen from './ScanScreen';
 import ResultsScreen, { SnapshotBanner } from './ResultsScreen';
 import DeleteDialog from './DeleteDialog';
 import {
-  count,
   emptyProgress,
   isDriveRoot,
   refreshTrails,
@@ -50,6 +50,15 @@ function findTrail(root: TreeNode, id: number): TreeNode[] | null {
 }
 
 export default function App() {
+  const [language, setLanguage] = useState(readPreference);
+  useEffect(() => {
+    setPreference(language);
+    void invoke('set_locale', { locale: activeLocale }).catch(e => setError(String(e)));
+  }, [language]);
+  function changeLanguage(next: LanguagePreference) {
+    setPreference(next);
+    setLanguage(next);
+  }
   const [phase, setPhase] = useState<Phase>('home');
   const [drives, setDrives] = useState<Drive[]>([]);
   const [saved, setSaved] = useState<SavedScan[]>([]);
@@ -107,7 +116,7 @@ export default function App() {
     invoke<AdminStatus>('admin_status').then(status => {
       if (disposed) return;
       setAdmin(status);
-      if (status.declined) setNotice('Continuing without administrator access.');
+      if (status.declined) setNotice(t('notice.adminDeclined'));
     }).catch(e => {
       if (!disposed) setError(String(e));
     });
@@ -141,11 +150,11 @@ export default function App() {
     }
     if (type === 'scan-cancelled') {
       setPhase('home');
-      setNotice('Scan cancelled. Choose a drive or folder to start again.');
+      setNotice(t('notice.scanCancelled'));
       setCancelling(false);
     }
     if (type === 'scan-error') {
-      setError(message.message ?? 'Scan failed. Try another folder.');
+      setError(message.message ?? t('errors.scanFailed'));
       setPhase('home');
       setCancelling(false);
     }
@@ -171,7 +180,7 @@ export default function App() {
         listeners.push(stopScan);
         if (!disposed) setReady(true);
       } catch (e) {
-        if (!disposed) setError(`Desktop connection unavailable: ${String(e)}`);
+        if (!disposed) setError(t('errors.desktop', { error: String(e) }));
       }
     })();
     return () => {
@@ -195,7 +204,7 @@ export default function App() {
     void refreshSaved();
     invoke<Drive[]>('list_drives').then(d => {
       if (!disposed) {
-        setDrives(d.sort((a, b) => a.mount.localeCompare(b.mount, 'en-GB', {
+        setDrives(d.sort((a, b) => a.mount.localeCompare(b.mount, intlLocale, {
           sensitivity: 'base',
           numeric: true,
         })));
@@ -363,7 +372,7 @@ export default function App() {
   }
   async function pickFolder() {
     try {
-      const path = await open({ directory: true, multiple: false, title: 'Choose a folder to map' });
+      const path = await open({ directory: true, multiple: false, title: t('dialog.folder') });
       if (typeof path === 'string') await start(path);
     } catch (e) {
       setError(String(e));
@@ -408,15 +417,15 @@ export default function App() {
     const currentSession = session.current;
     try {
       const path = await save({
-        title: 'Export scan',
+        title: t('dialog.export'),
         defaultPath: `${node.name.replace(/[\\/:*?"<>|]/g, '').trim() || 'scan'}.csv`,
-        filters: [{ name: 'CSV', extensions: ['csv'] }, { name: 'JSON', extensions: ['json'] }],
+        filters: [{ name: t('dialog.csv'), extensions: ['csv'] }, { name: t('dialog.json'), extensions: ['json'] }],
       });
       if (!path || session.current !== currentSession) return;
       setExporting(true);
       setError('');
       const items = await invoke<number>('export_scan', { nodeId: node.id, path, format: /\.json$/i.test(path) ? 'json' : 'csv' });
-      setNotice(`Exported ${count(items, 'item')} to ${path.split(/[\\/]/).pop()}.`);
+      setNotice(t('notice.exported', { count: items, name: path.split(/[\\/]/).pop()! }));
     } catch (e) {
       setError(String(e));
     } finally {
@@ -501,7 +510,7 @@ export default function App() {
       if (command === 'copy') {
         const path = await invoke<string>('get_node_path', { nodeId: node.id });
         await navigator.clipboard.writeText(path);
-        setNotice('Path copied.');
+        setNotice(t('notice.copied'));
       } else {
         await invoke(command, { nodeId: node.id });
       }
@@ -522,7 +531,7 @@ export default function App() {
     try {
       const result = await invoke<{ root: TreeNode; recycled: number; deleted: number }>('delete_item', { nodeId: node.id, permanent });
       if (session.current !== currentSession) return;
-      setNotice(permanent ? `Deleted ${node.name} permanently.` : `Moved ${node.name} to the Recycle Bin.`);
+      setNotice(permanent ? t('notice.deleted', { name: node.name }) : t('notice.recycled', { name: node.name }));
       setRecycled(result.recycled);
       setDeleted(result.deleted);
       setSnapshot(meta => meta && { ...meta, size: result.root.size, files: result.root.files, folders: result.root.folders, recycled: result.recycled, deleted: result.deleted });
@@ -539,7 +548,7 @@ export default function App() {
       setRefresh(value => value + 1);
     } catch (e) {
       if (session.current !== currentSession) return;
-      if (String(e) === 'Delete cancelled.') setNotice('Delete cancelled.');
+      if (String(e) === t('errors.deleteCancelled')) setNotice(t('errors.deleteCancelled'));
       else setError(String(e));
     } finally {
       setRunning(false);
@@ -563,17 +572,17 @@ export default function App() {
         </div>
         <div className="header-actions">
           {phase === 'results' && <>
-            <button onClick={() => void start(scanPath)}>Rescan</button>
+            <button onClick={() => void start(scanPath)}>{t('common.rescan')}</button>
             <button
               onClick={() => {
                 setPhase('home');
                 setError('');
               }}
             >
-              Home
+              {t('app.home')}
             </button>
           </>}
-          {admin?.supported && <SettingsMenu admin={admin} busy={adminBusy} setAlwaysElevate={setAlwaysElevate} setContextMenu={setContextMenu} />}
+          <SettingsMenu admin={admin ?? { supported: false, elevated: false, alwaysElevate: false, declined: false, contextMenuEnabled: false }} language={language} setLanguage={changeLanguage} busy={adminBusy} setAlwaysElevate={setAlwaysElevate} setContextMenu={setContextMenu} />
         </div>
       </header>
       {error && (
@@ -583,7 +592,7 @@ export default function App() {
         >
           <span>{error}</span>
           <button
-            aria-label="Dismiss error"
+            aria-label={t('app.dismissError')}
             onClick={() => setError('')}
           >
             ×
@@ -597,7 +606,7 @@ export default function App() {
         >
           <span>{notice}</span>
           <button
-            aria-label="Dismiss notification"
+            aria-label={t('app.dismissNotice')}
             onClick={() => setNotice('')}
           >
             ×
@@ -675,7 +684,7 @@ export default function App() {
       {menu && (
         <div
           role="menu"
-          aria-label="Item actions"
+          aria-label={t('actions.title')}
           className="context-menu"
           style={{ left: menu.x, top: menu.y }}
         >
@@ -686,7 +695,7 @@ export default function App() {
               autoFocus
               onClick={() => void action('open_folder', menu.node)}
             >
-              Open folder
+              {t('actions.openFolder')}
             </button>
           )}
           <button
@@ -694,16 +703,16 @@ export default function App() {
             autoFocus={menu.node.kind !== 'dir'}
             onClick={() => void action('reveal_in_explorer', menu.node)}
           >
-            Reveal in Explorer
+            {t('actions.reveal')}
           </button>
           <button
             role="menuitem"
             onClick={() => void action('copy', menu.node)}
           >
-            Copy path
+            {t('actions.copy')}
           </button>
           {menu.node.id !== null && menu.node.id !== 0 && (
-            <button role="menuitem" onClick={() => void action('delete', menu.node)}>Delete…</button>
+            <button role="menuitem" onClick={() => void action('delete', menu.node)}>{t('actions.delete')}</button>
           )}
         </div>
       )}

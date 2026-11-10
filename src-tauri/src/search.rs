@@ -70,7 +70,7 @@ fn tokens(text: &str) -> Result<Vec<(String, bool)>, String> {
                 match chars.next() {
                     Some('"') => break,
                     Some(c) => token.push(c),
-                    None => return Err("Close the quote at the end of the search.".into()),
+                    None => return Err(crate::i18n::t("errors.searchQuote")),
                 }
             }
             if !token.is_empty() {
@@ -107,7 +107,10 @@ fn term(token: &str, now_ms: u64) -> Result<Term, String> {
             && rest.starts_with(['<', '>', '='])
         {
             let (compare, value) = comparison(rest).ok_or_else(|| {
-                format!("Invalid {prefix} filter \"{token}\". Use >, <, >= or <=.")
+                crate::i18n::with_args(
+                    "errors.searchFilter",
+                    &[("prefix", prefix), ("token", token)],
+                )
             })?;
             return if prefix == "modified" {
                 crate::dates::parse(value)
@@ -116,7 +119,7 @@ fn term(token: &str, now_ms: u64) -> Result<Term, String> {
                         Compare::Greater => Term::Modified(Compare::AtLeast, ms + 86_400_000),
                         _ => Term::Modified(compare, ms),
                     })
-                    .ok_or_else(|| format!("Invalid date \"{value}\". Use YYYY-MM-DD (UTC)."))
+                    .ok_or_else(|| crate::i18n::with_args("errors.searchDate", &[("value", value)]))
             } else {
                 let duration = value.len().checked_sub(1).and_then(|end| {
                     if !value.is_char_boundary(end) {
@@ -137,9 +140,7 @@ fn term(token: &str, now_ms: u64) -> Result<Term, String> {
                 });
                 duration
                     .map(|ms| Term::Age(compare, ms, now_ms))
-                    .ok_or_else(|| {
-                        format!("Invalid age \"{value}\". Use a whole number with d, w, m or y.")
-                    })
+                    .ok_or_else(|| crate::i18n::with_args("errors.searchAge", &[("value", value)]))
             };
         }
     }
@@ -150,15 +151,19 @@ fn term(token: &str, now_ms: u64) -> Result<Term, String> {
             .map(|index| Term::Category(index as u8))
             .ok_or_else(|| {
                 let ids: Vec<_> = categories().iter().map(|c| c.id.as_str()).collect();
-                format!("Unknown type \"{id}\". Use one of: {}.", ids.join(", "))
+                crate::i18n::with_args(
+                    "errors.searchType",
+                    &[("id", id), ("types", &ids.join(", "))],
+                )
             });
     }
     if let Some(kind) = lower.strip_prefix("kind:") {
         return match kind {
             "file" => Ok(Term::Kind(Kind::File)),
             "dir" => Ok(Term::Kind(Kind::Dir)),
-            _ => Err(format!(
-                "Unknown kind \"{kind}\". Use kind:file or kind:dir."
+            _ => Err(crate::i18n::with_args(
+                "errors.searchKind",
+                &[("kind", kind)],
             )),
         };
     }
@@ -174,12 +179,13 @@ fn term(token: &str, now_ms: u64) -> Result<Term, String> {
         } else if let Some(value) = rest.strip_prefix('<') {
             (Compare::Less, value)
         } else {
-            return Err(format!(
-                "Invalid size filter \"{token}\". Use size>, size<, size>= or size<=."
+            return Err(crate::i18n::with_args(
+                "errors.searchSizeFilter",
+                &[("token", token)],
             ));
         };
         let bytes = parse_size(value).ok_or_else(|| {
-            format!("Invalid size \"{value}\" in \"{token}\". Use a number with KB, MB, GB or TB.")
+            crate::i18n::with_args("errors.searchSize", &[("value", value), ("token", token)])
         })?;
         return Ok(Term::Size(compare, bytes));
     }

@@ -432,10 +432,14 @@ pub fn scan(
     cancel: &AtomicBool,
     report: impl Fn(Progress) + Sync,
 ) -> Result<Option<Tree>, String> {
-    let metadata =
-        fs::symlink_metadata(path).map_err(|e| format!("Cannot open {}: {e}", path.display()))?;
+    let metadata = fs::symlink_metadata(path).map_err(|e| {
+        crate::i18n::with_args(
+            "errors.openPath",
+            &[("path", &path.display().to_string()), ("e", &e.to_string())],
+        )
+    })?;
     if !metadata.is_dir() || excluded(&metadata) {
-        return Err("Choose a regular folder or drive, not a link or junction.".into());
+        return Err(crate::i18n::t("errors.regularFolder"));
     }
     let root_path = strip_verbatim_prefix(&fs::canonicalize(path).map_err(|e| e.to_string())?);
     #[cfg(windows)]
@@ -629,20 +633,20 @@ impl Tree {
         let node = self
             .nodes
             .get(id)
-            .ok_or_else(|| "This item is no longer available. Scan again.".to_string())?;
+            .ok_or_else(|| crate::i18n::t("errors.itemUnavailable"))?;
         let mut current = id;
         while let Some(parent) = self.nodes[current].parent {
             current = parent;
         }
         if current != 0 {
-            return Err("This item was deleted.".into());
+            return Err(crate::i18n::t("errors.itemDeleted"));
         }
         Ok(node)
     }
     pub fn remove(&mut self, id: usize) -> Result<(), String> {
         let node = self.node(id)?;
         let Some(mut parent) = node.parent else {
-            return Err("The scan root can't be deleted.".into());
+            return Err(crate::i18n::t("errors.deleteRoot"));
         };
         let (size, allocated, files, folders) = (
             node.size,
@@ -721,7 +725,10 @@ impl Tree {
                 let rest = &node.children[used..];
                 children.push(ViewNode {
                     id: None,
-                    name: format!("{} smaller items", rest.len()),
+                    name: crate::i18n::with_args(
+                        "results.smallerItems",
+                        &[("count", &rest.len().to_string())],
+                    ),
                     kind: Kind::Other,
                     size: rest.iter().map(|i| self.nodes[*i].size).sum(),
                     allocated: rest.iter().map(|i| self.nodes[*i].allocated).sum(),
@@ -869,9 +876,7 @@ impl FileSort {
             "size" => Ok(Self::Size),
             "name" => Ok(Self::Name),
             "modified" => Ok(Self::Modified),
-            _ => Err(format!(
-                "Unknown file sort \"{text}\". Use size, name or modified."
-            )),
+            _ => Err(crate::i18n::with_args("errors.fileSort", &[("text", text)])),
         }
     }
 }

@@ -1,3 +1,4 @@
+import { t } from './i18n';
 import { useEffect, useRef, useState, type ReactNode } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import { categoryColor, count, formatSize, percent, type ExtensionTotal, type FilePage, type FileSort, type LargeFile, type TreeNode } from './model';
@@ -45,23 +46,23 @@ export default function FilesPanel({ tree, hasModified, renderFile }: FilesProps
   return <>
     <div className="files-toolbar">
       <div className="search-field">
-        <input type="search" aria-label="Filter all files" placeholder="Filter... *.log age>1y" value={filter} spellCheck={false}
+        <input type="search" aria-label={t('files.filter')} placeholder={t('files.placeholder')} value={filter} spellCheck={false}
           aria-invalid={error ? true : undefined} aria-describedby={error ? 'files-error' : undefined}
           onChange={e => setFilter(e.target.value)} />
         {error && <small id="files-error" className="search-error">{error}</small>}
       </div>
-      <div className="file-sorts" role="group" aria-label="Sort files">
+      <div className="file-sorts" role="group" aria-label={t('files.sort')}>
         {(['size', 'name', ...(hasModified ? ['modified'] : [])] as FileSort[]).map(value => <button key={value}
           aria-pressed={activeSort === value} onClick={() => changeSort(value)}>
-          {value[0].toUpperCase() + value.slice(1)}{activeSort === value && (descending ? ' \u2193' : ' \u2191')}
+          {t(`sort.${value}`)}{activeSort === value && (descending ? ' \u2193' : ' \u2191')}
         </button>)}
       </div>
-      <span className="files-total">{page ? count(page.total, 'file') : busy ? 'Loading...' : ''}</span>
+      <span className="files-total">{page ? count(page.total, 'file') : busy ? t('common.loading') : ''}</span>
     </div>
     <div className="largest-scroll" aria-busy={busy}>
       {page?.files.map(renderFile)}
-      {page && !page.files.length && <p className="quiet-empty">No files found.</p>}
-      {page && page.files.length < page.total && <button className="show-more" disabled={busy} onClick={() => void load(page.files.length, generation.current)}>{busy ? 'Loading...' : 'Show more'}</button>}
+      {page && !page.files.length && <p className="quiet-empty">{t('files.none')}</p>}
+      {page && page.files.length < page.total && <button className="show-more" disabled={busy} onClick={() => void load(page.files.length, generation.current)}>{busy ? t('common.loading') : t('files.more')}</button>}
     </div>
   </>;
 }
@@ -81,15 +82,15 @@ export function ExtensionsPanel({ tree, hasAllocated, setQuery }: { tree: TreeNo
   return <div className="largest-scroll">
     {rows?.map(row => {
       const content = <>
-        <span className="row-name"><i className="extension-swatch" style={{ background: categoryColor(row.category) }} /><span>{row.extension ? '.' + row.extension : 'No extension'}</span></span>
-        <span className="row-data"><span>{count(row.files, 'file')}</span><strong className="row-size" title={hasAllocated ? formatSize(row.allocated) + ' on disk' : undefined}>{formatSize(row.bytes)}</strong><span className="row-percent">{percent(row.bytes, tree.size)}</span></span>
+        <span className="row-name"><i className="extension-swatch" style={{ background: categoryColor(row.category) }} /><span>{row.extension ? '.' + row.extension : t('files.noExtension')}</span></span>
+        <span className="row-data"><span>{count(row.files, 'file')}</span><strong className="row-size" title={hasAllocated ? t('results.onDisk', { size: formatSize(row.allocated) }) : undefined}>{formatSize(row.bytes)}</strong><span className="row-percent">{percent(row.bytes, tree.size)}</span></span>
         <span className="row-meter"><i style={{ width: (tree.size ? row.bytes / tree.size * 100 : 0) + '%', background: categoryColor(row.category) }} /></span>
       </>;
       return row.extension ? <button key={row.extension} className="content-row" onClick={() => setQuery('*.' + row.extension)}>{content}</button>
         : <div key="" className="content-row">{content}</div>;
     })}
     {error && <p className="quiet-empty" role="status">{error}</p>}
-    {!rows && !error && <p className="quiet-empty">Loading extensions...</p>}
-    {rows && !rows.length && <p className="quiet-empty">No files found.</p>}
+    {!rows && !error && <p className="quiet-empty">{t('files.loadingExtensions')}</p>}
+    {rows && !rows.length && <p className="quiet-empty">{t('files.none')}</p>}
   </div>;
 }

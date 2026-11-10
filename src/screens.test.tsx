@@ -14,6 +14,7 @@ import { invoke } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
 import { save } from '@tauri-apps/plugin-dialog';
 import App from './App';
+import { setPreference } from './i18n';
 
 vi.mock('@tauri-apps/api/core', () => ({ invoke: vi.fn() }));
 vi.mock('@tauri-apps/api/event', () => ({ listen: vi.fn() }));
@@ -716,7 +717,7 @@ describe('Explorer scan requests', () => {
 
   it('keeps settings at the end of the header on Home, scanning and results', async () => {
     const app = mountApp();
-    expect(app.html()).not.toContain('aria-label="Settings"');
+    expect(app.html()).toContain('aria-label="Settings"');
     await app.settle();
     for (const phase of ['home', 'scanning', 'results']) {
       app.find(SettingsMenu);
@@ -731,12 +732,58 @@ describe('Explorer scan requests', () => {
     app.unmount();
   });
 
-  it('hides settings when administrator controls are unsupported', async () => {
+  it('keeps settings when administrator controls are unsupported', async () => {
     const app = mountApp(null, { ...admin, supported: false });
     await app.settle();
     expect(app.html()).toContain('class="header-actions"');
-    expect(app.html()).not.toContain('aria-label="Settings"');
+    expect(app.html()).toContain('aria-label="Settings"');
     app.unmount();
+  });
+
+  it('switches language from Settings, persists it and updates the backend', async () => {
+    const storage = new Map<string, string>();
+    vi.stubGlobal('localStorage', { getItem: (key: string) => storage.get(key), setItem: (key: string, value: string) => storage.set(key, value) });
+    const app = mountApp(null, { ...admin, supported: false });
+    await app.settle();
+    const root = { lang: '' };
+    Object.assign(document, { documentElement: root });
+    expect(invoke).toHaveBeenCalledWith('set_locale', { locale: 'en' });
+    const effect = vi.mocked(React.useEffect).getMockImplementation()!;
+    const ref = vi.mocked(React.useRef).getMockImplementation()!;
+    vi.mocked(React.useEffect).mockImplementation(noop);
+    vi.mocked(React.useRef).mockImplementation((initial => ({ current: initial })) as typeof React.useRef);
+    vi.mocked(React.useState).mockReturnValueOnce([true, noop]);
+    const panel = SettingsMenu(app.find(SettingsMenu).props);
+    vi.mocked(React.useEffect).mockImplementation(effect);
+    vi.mocked(React.useRef).mockImplementation(ref);
+    let select: ReactElement<React.ComponentProps<'select'>> | undefined;
+    function walk(node: ReactNode) {
+      for (const child of Children.toArray(node)) {
+        if (!isValidElement<{ children?: ReactNode }>(child)) continue;
+        if (child.type === 'select') select = child as typeof select;
+        walk(child.props.children);
+      }
+    }
+    walk(panel);
+    expect(renderToStaticMarkup(panel)).not.toContain('type="checkbox"');
+    expect(select).toBeDefined();
+    try {
+      select!.props.onChange!({ target: { value: 'fr' } } as React.ChangeEvent<HTMLSelectElement>);
+      await app.settle();
+      expect(app.html()).toContain('Vos disques');
+      expect(app.html()).toContain('aria-label="Paramètres"');
+      expect(storage.get('sprawl.language')).toBe('fr');
+      expect(root.lang).toBe('fr');
+      expect(invoke).toHaveBeenCalledWith('set_locale', { locale: 'fr' });
+      vi.mocked(invoke).mockRejectedValueOnce('Locale unavailable');
+      app.find(SettingsMenu).props.setLanguage!('de');
+      await app.settle();
+      expect(app.html()).toContain('role="alert"');
+      expect(app.html()).toContain('Locale unavailable');
+    } finally {
+      app.unmount();
+      setPreference('system');
+    }
   });
 
   it('takes the launch path after all listeners are ready and uses the normal scan flow once', async () => {

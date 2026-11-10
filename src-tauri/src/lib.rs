@@ -4,6 +4,7 @@ mod changes;
 pub mod cli;
 mod dates;
 mod export;
+mod i18n;
 mod mft;
 mod recycle;
 mod scanner;
@@ -83,10 +84,10 @@ fn tree(state: &AppState) -> Result<Arc<Tree>, String> {
     state
         .session
         .lock()
-        .map_err(|_| "Scan state is unavailable".to_string())?
+        .map_err(|_| crate::i18n::t("errors.scanState"))?
         .tree
         .clone()
-        .ok_or_else(|| "No completed scan. Choose a folder to begin.".into())
+        .ok_or_else(|| crate::i18n::t("errors.noScan"))
 }
 
 #[derive(Serialize)]
@@ -155,7 +156,8 @@ fn scans_dir(app: &tauri::AppHandle) -> Result<PathBuf, String> {
 }
 
 fn lock_cache(dir: &Path) -> Result<std::fs::File, String> {
-    cache::lock(dir).map_err(|e| format!("Saved scans are unavailable: {e}"))
+    cache::lock(dir)
+        .map_err(|e| crate::i18n::with_args("errors.savedScans", &[("e", &e.to_string())]))
 }
 
 fn settings_path(app: &tauri::AppHandle) -> Result<PathBuf, String> {
@@ -209,7 +211,7 @@ fn set_always_elevate(enabled: bool, app: tauri::AppHandle) -> Result<(), String
             always_elevate: enabled,
         },
     )
-    .map_err(|e| format!("Could not save administrator preference: {e}"))
+    .map_err(|e| crate::i18n::with_args("errors.saveAdmin", &[("e", &e.to_string())]))
 }
 
 #[tauri::command]
@@ -251,7 +253,7 @@ async fn load_saved_scan(
         let mut session = state
             .session
             .lock()
-            .map_err(|_| "Scan state is unavailable".to_string())?;
+            .map_err(|_| crate::i18n::t("errors.scanState"))?;
         if let Some(loaded) = session.open_saved(&path, scanned_at)? {
             return Ok(loaded);
         }
@@ -276,9 +278,9 @@ async fn load_saved_scan(
             let mut session = state
                 .session
                 .lock()
-                .map_err(|_| "Scan state is unavailable".to_string())?;
+                .map_err(|_| crate::i18n::t("errors.scanState"))?;
             if session.generation != generation {
-                return Err("Another scan has started. Open the saved scan again.".into());
+                return Err(crate::i18n::t("errors.anotherScan"));
             }
             session.saved = Some(loaded.saved.clone());
             session.panels = Arc::default();
@@ -301,7 +303,7 @@ async fn clear_saved_scans(app: tauri::AppHandle) -> Result<(), String> {
         state
             .session
             .lock()
-            .map_err(|_| "Scan state is unavailable".to_string())?
+            .map_err(|_| crate::i18n::t("errors.scanState"))?
             .panels = Arc::default();
         let _ = app.emit("saved-scans-changed", ());
         Ok(())
@@ -345,7 +347,7 @@ fn start_scan(
         let mut session = state
             .session
             .lock()
-            .map_err(|_| "Scan state is unavailable".to_string())?;
+            .map_err(|_| crate::i18n::t("errors.scanState"))?;
         if let Some(old) = session.cancel.take() {
             old.store(true, Ordering::Relaxed);
         }
@@ -367,7 +369,7 @@ fn start_scan(
                     ScanEvent {
                         scan_id: generation,
                         data: ScanError {
-                            message: "Scanner state is unavailable".into(),
+                            message: crate::i18n::t("errors.scannerState"),
                         },
                     },
                 );
@@ -423,7 +425,7 @@ fn start_scan(
                 ScanEvent {
                     scan_id: generation,
                     data: ScanError {
-                        message: "Scan state is unavailable".into(),
+                        message: crate::i18n::t("errors.scanState"),
                     },
                 },
             );
@@ -517,7 +519,7 @@ fn cancel_scan(state: State<'_, AppState>) -> Result<(), String> {
     let session = state
         .session
         .lock()
-        .map_err(|_| "Scan state is unavailable".to_string())?;
+        .map_err(|_| crate::i18n::t("errors.scanState"))?;
     if let Some(cancel) = &session.cancel {
         cancel.store(true, Ordering::Relaxed);
     }
@@ -558,7 +560,7 @@ async fn delete_item(
     #[cfg(windows)]
     let owner = app
         .get_webview_window("main")
-        .ok_or("The main window is unavailable.")?
+        .ok_or_else(|| crate::i18n::t("errors.mainWindow"))?
         .hwnd()
         .map_err(|e| e.to_string())?
         .0 as usize;
@@ -569,26 +571,26 @@ async fn delete_item(
         let _delete = state
             .deletes
             .lock()
-            .map_err(|_| "Delete state is unavailable".to_string())?;
+            .map_err(|_| crate::i18n::t("errors.deleteState"))?;
         let (tree, generation, path, mut meta) = {
             let session = state
                 .session
                 .lock()
-                .map_err(|_| "Scan state is unavailable".to_string())?;
+                .map_err(|_| crate::i18n::t("errors.scanState"))?;
             let tree = session
                 .tree
                 .clone()
-                .ok_or("No completed scan. Choose a folder to begin.")?;
+                .ok_or_else(|| crate::i18n::t("errors.noScan"))?;
             let node = tree.node(node_id)?;
             if node_id == 0 {
-                return Err("The scan root can't be deleted.".into());
+                return Err(crate::i18n::t("errors.deleteRoot"));
             }
             let path = tree.path(node_id)?;
             recycle::check(&path, node.kind)?;
             let meta = session
                 .saved
                 .clone()
-                .ok_or("Scan metadata is unavailable.")?;
+                .ok_or_else(|| crate::i18n::t("errors.metadata"))?;
             (tree, session.generation, path, meta)
         };
         let size = tree.nodes[node_id].size;
@@ -614,7 +616,7 @@ async fn delete_item(
             let mut session = state
                 .session
                 .lock()
-                .map_err(|_| "Scan state is unavailable".to_string())?;
+                .map_err(|_| crate::i18n::t("errors.scanState"))?;
             if session.generation != generation
                 || !session
                     .tree
@@ -657,12 +659,12 @@ async fn get_largest_files(
         let session = state
             .session
             .lock()
-            .map_err(|_| "Scan state is unavailable".to_string())?;
+            .map_err(|_| crate::i18n::t("errors.scanState"))?;
         (
             session
                 .tree
                 .clone()
-                .ok_or("No completed scan. Choose a folder to begin.")?,
+                .ok_or_else(|| crate::i18n::t("errors.noScan"))?,
             session.panels.clone(),
         )
     };
@@ -685,12 +687,12 @@ async fn get_type_breakdown(
         let session = state
             .session
             .lock()
-            .map_err(|_| "Scan state is unavailable".to_string())?;
+            .map_err(|_| crate::i18n::t("errors.scanState"))?;
         (
             session
                 .tree
                 .clone()
-                .ok_or("No completed scan. Choose a folder to begin.")?,
+                .ok_or_else(|| crate::i18n::t("errors.noScan"))?,
             session.panels.clone(),
         )
     };
@@ -713,12 +715,12 @@ async fn get_extension_breakdown(
         let session = state
             .session
             .lock()
-            .map_err(|_| "Scan state is unavailable".to_string())?;
+            .map_err(|_| crate::i18n::t("errors.scanState"))?;
         (
             session
                 .tree
                 .clone()
-                .ok_or("No completed scan. Choose a folder to begin.")?,
+                .ok_or_else(|| crate::i18n::t("errors.noScan"))?,
             session.panels.clone(),
         )
     };
@@ -742,12 +744,12 @@ async fn get_changes(
         let session = state
             .session
             .lock()
-            .map_err(|_| "Scan state is unavailable".to_string())?;
+            .map_err(|_| crate::i18n::t("errors.scanState"))?;
         (
             session
                 .tree
                 .clone()
-                .ok_or("No completed scan. Choose a folder to begin.")?,
+                .ok_or_else(|| crate::i18n::t("errors.noScan"))?,
             session.saved.clone(),
             session.panels.clone(),
         )
@@ -790,12 +792,12 @@ async fn get_files(
         let session = state
             .session
             .lock()
-            .map_err(|_| "Scan state is unavailable".to_string())?;
+            .map_err(|_| crate::i18n::t("errors.scanState"))?;
         (
             session
                 .tree
                 .clone()
-                .ok_or("No completed scan. Choose a folder to begin.")?,
+                .ok_or_else(|| crate::i18n::t("errors.noScan"))?,
             session.panels.clone(),
         )
     };
@@ -810,7 +812,7 @@ async fn get_files(
         let cached = panels
             .files
             .lock()
-            .map_err(|_| "File list is unavailable".to_string())?
+            .map_err(|_| crate::i18n::t("errors.files"))?
             .as_ref()
             .filter(|(k, _)| *k == key)
             .map(|(_, ids)| ids.clone());
@@ -821,8 +823,7 @@ async fn get_files(
                 *panels
                     .files
                     .lock()
-                    .map_err(|_| "File list is unavailable".to_string())? =
-                    Some((key, ids.clone()));
+                    .map_err(|_| crate::i18n::t("errors.files"))? = Some((key, ids.clone()));
                 ids
             }
         };
@@ -879,7 +880,7 @@ fn get_node_path(node_id: usize, state: State<'_, AppState>) -> Result<String, S
 fn reveal_in_explorer(node_id: usize, state: State<'_, AppState>) -> Result<(), String> {
     let path = tree(&state)?.path(node_id)?;
     if !path.exists() {
-        return Err("This item no longer exists. Rescan to refresh it.".into());
+        return Err(crate::i18n::t("errors.itemGone"));
     }
     tauri_plugin_opener::reveal_item_in_dir(path).map_err(|e| e.to_string())
 }
@@ -887,16 +888,21 @@ fn reveal_in_explorer(node_id: usize, state: State<'_, AppState>) -> Result<(), 
 fn open_folder(node_id: usize, state: State<'_, AppState>) -> Result<(), String> {
     let tree = tree(&state)?;
     if tree.node(node_id)?.kind != Kind::Dir {
-        return Err("Choose a folder to open.".into());
+        return Err(crate::i18n::t("errors.chooseFolder"));
     }
     let path = tree.path(node_id)?;
     if !std::fs::symlink_metadata(&path)
-        .map_err(|_| "This folder has changed. Rescan to refresh it.".to_string())?
+        .map_err(|_| crate::i18n::t("errors.folderChanged"))?
         .is_dir()
     {
-        return Err("This folder has changed. Rescan to refresh it.".into());
+        return Err(crate::i18n::t("errors.folderChanged"));
     }
     tauri_plugin_opener::open_path(path, None::<&str>).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn set_locale(locale: String) {
+    i18n::set_locale(&locale);
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -955,6 +961,7 @@ pub fn run() {
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
+            set_locale,
             admin_status,
             set_context_menu,
             take_launch_path,

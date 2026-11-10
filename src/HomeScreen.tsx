@@ -1,3 +1,4 @@
+import { t, rich } from './i18n';
 import { formatAge, formatSize, isDriveRoot, middlePath, staleness, type AdminStatus, type Drive, type SavedScan } from './model';
 
 interface Props {
@@ -36,10 +37,10 @@ export default function HomeScreen({
       <section className="drives-section">
         <div className="section-heading drives-heading">
           <div>
-            <h2>Your drives</h2>
-            <span>{drives.length} available</span>
+            <h2>{t('home.drives')}</h2>
+            <span>{t('home.available', { count: drives.length })}</span>
             {admin?.supported && admin.elevated && (
-              <span>Running as administrator · drive scans use the fast path.</span>
+              <span>{t('home.elevated')}</span>
             )}
           </div>
           <button
@@ -47,13 +48,13 @@ export default function HomeScreen({
             disabled={disabled}
             onClick={() => void pickFolder()}
           >
-            ▱ &nbsp; Scan a folder…
+            ▱ &nbsp; {t('home.scanFolder')}
           </button>
         </div>
         {admin?.supported && !admin.elevated && (
           <div className="admin-row">
-            <span>Drive scans are much faster when Sprawl runs as administrator.</span>
-            <button disabled={disabled} onClick={() => void restartAsAdmin()}>Restart as administrator</button>
+            <span>{t('home.adminHint')}</span>
+            <button disabled={disabled} onClick={() => void restartAsAdmin()}>{t('home.restartAdmin')}</button>
           </div>
         )}
         <div className="drive-grid">
@@ -68,7 +69,7 @@ export default function HomeScreen({
                 <div className="drive-title">
                   <span className="drive-letter">{d.mount.replace(/[\\/]/g, '')}</span>
                   <div>
-                    <h3 title={d.label || 'Local disk'}>{d.label || 'Local disk'}</h3>
+                    <h3 title={d.label || t('home.localDisk')}>{d.label || t('home.localDisk')}</h3>
                     <span>{d.mount}</span>
                   </div>
                 </div>
@@ -76,23 +77,23 @@ export default function HomeScreen({
                   <i style={{ width: `${d.total ? (d.total - d.free) / d.total * 100 : 0}%` }} />
                 </div>
                 <p>
-                  <span><strong>{formatSize(d.total - d.free)}</strong> used of {formatSize(d.total)}</span>
-                  <span>{formatSize(d.free)} free</span>
+                  <span>{rich('home.used', { used: <strong key="used">{formatSize(d.total - d.free)}</strong>, total: formatSize(d.total) })}</span>
+                  <span>{t('home.freeSpace', { size: formatSize(d.free) })}</span>
                 </p>
                 {scan && (
                   <div className={`last-scan ${stale?.old || stale?.freeDelta != null ? 'warning' : ''}`}>
-                    Last scanned {formatAge(scan.scannedAt, now)} · {formatSize(scan.size)}
+                    {t('home.lastScanned', { age: formatAge(scan.scannedAt, now), size: formatSize(scan.size) })}
                   </div>
                 )}
                 <div className="drive-actions">
                   {scan && (
-                    <button disabled={disabled} onClick={() => void openSaved(scan.path, scan.scannedAt)}>{opening === scan.path ? 'Opening…' : 'Open last scan'}</button>
+                    <button disabled={disabled} onClick={() => void openSaved(scan.path, scan.scannedAt)}>{opening === scan.path ? t('common.opening') : t('home.openLast')}</button>
                   )}
                   <button
                     disabled={disabled}
                     onClick={() => void start(d.mount)}
                   >
-                    Scan drive
+                    {t('home.scanDrive')}
                   </button>
                 </div>
               </article>
@@ -101,27 +102,27 @@ export default function HomeScreen({
         </div>
         {!drives.length && (
           <div className="empty-state">
-            <h3>No drives found</h3>
-            <p>Choose a folder to explore its disk usage.</p>
+            <h3>{t('home.noDrives')}</h3>
+            <p>{t('home.chooseFolder')}</p>
           </div>
         )}
       </section>
       {folders.length > 0 && (
         <section className="recent-folders">
-          <div className="section-heading"><h2>Recent folders</h2></div>
+          <div className="section-heading"><h2>{t('home.recent')}</h2></div>
           {folders.map(s => (
             <div className="saved-folder" key={s.path}>
               <div>
                 <strong title={s.path}>{middlePath(s.path)}</strong>
                 <span className={staleness(s, undefined, now).old ? 'warning' : ''}>{formatAge(s.scannedAt, now)} · {formatSize(s.size)}</span>
               </div>
-              <button disabled={disabled} onClick={() => void openSaved(s.path, s.scannedAt)}>{opening === s.path ? 'Opening…' : 'Open'}</button>
+              <button disabled={disabled} onClick={() => void openSaved(s.path, s.scannedAt)}>{opening === s.path ? t('common.opening') : t('common.open')}</button>
             </div>
           ))}
         </section>
       )}
       {saved.length > 0 && (
-        <button className="clear-saved" disabled={disabled} onClick={() => void clearSaved()}>Clear saved scans</button>
+        <button className="clear-saved" disabled={disabled} onClick={() => void clearSaved()}>{t('home.clearSaved')}</button>
       )}
     </section>
   );

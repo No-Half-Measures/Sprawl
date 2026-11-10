@@ -1,3 +1,4 @@
+import { t, rich } from './i18n';
 import { useState, type CSSProperties, type ReactNode, type Ref } from 'react';
 import Treemap from './Treemap';
 import FilesPanel, { ExtensionsPanel } from './FilesPanel';
@@ -24,27 +25,18 @@ import {
   type TreeNode,
 } from './model';
 
-const searchHelp = `Search everything under this folder. Every term must match; names ignore case.
-word: name contains word
-"two words": name contains the phrase
-*.iso, report-??.pdf: wildcards match the whole name
-size>1GB, size<=500MB: logical size, with >, <, >= or <=
-type:video: file category (${categories.map(c => c.id).join(', ')})
-kind:file or kind:dir
-modified<2025-01-01: last modified UTC day, with >, <, >= or <= (<= includes the whole day)
-age>1y: age, with >, <, >= or <= and d, w, m (30 days), y (365 days)
-Ctrl+F focuses the search. Esc clears it.`;
+
 
 export function SnapshotBanner({ saved, drive, rescan, now = Date.now() }: { saved: SavedScan; drive?: Drive; rescan: () => void; now?: number }) {
   const { old, freeDelta } = staleness(saved, drive, now);
   return (
     <div role="status" className={`banner snapshot ${old || freeDelta !== null ? 'warning' : ''}`}>
       <span>
-        Snapshot from {formatScanDate(saved.scannedAt)} · {formatAge(saved.scannedAt, now)}
-        {old && ' · This may be out of date.'}
-        {freeDelta !== null && ` · Free space has changed by ${formatSize(Math.abs(freeDelta))} since this scan.`}
+        {t('snapshot.from', { date: formatScanDate(saved.scannedAt), age: formatAge(saved.scannedAt, now) })}
+        {old && t('snapshot.old')}
+        {freeDelta !== null && t('snapshot.freeChanged', { size: formatSize(Math.abs(freeDelta)) })}
       </span>
-      <button onClick={rescan}>Rescan</button>
+      <button onClick={rescan}>{t('common.rescan')}</button>
     </div>
   );
 }
@@ -162,15 +154,15 @@ export default function ResultsScreen({
   const used = Math.max(0, total - free);
   const found = hasAllocated ? current.allocated : current.size;
   const notFound = drive ? notFoundByScan(total, free, found + recycled + deleted) : null;
-  const onDisk = (bytes: number) => hasAllocated ? `${formatSize(bytes)} on disk` : undefined;
+  const onDisk = (bytes: number) => hasAllocated ? t('results.onDisk', { size: formatSize(bytes) }) : undefined;
   const notFoundText = (skipped > 0
-    ? `Includes ${count(skipped, 'item')} that couldn't be read, plus system files and file-system overhead.`
-    : "System files, restore points, and file-system overhead the scan can't see.")
-    + (elevated === false ? ' Run as administrator to include more.' : '');
+    ? t('results.unreadableHint', { count: skipped, items: count(skipped, 'item') })
+    : t('results.notFoundHint'))
+    + (elevated === false ? t('results.adminHint') : '');
   const previousSizes = new Map(changes?.children.map(n => [n.id, n.previousSize]));
   const since = changes ? formatScanDate(changes.since) : '';
   const activeTab = fileTab === 'grown' && !changes ? 'largest' : fileTab;
-  const tabs = [{ id: 'largest', label: 'Largest files' }, { id: 'all', label: 'All files' }, { id: 'extensions', label: 'Extensions' }, ...(changes ? [{ id: 'grown', label: 'Grown since ' + since }] : [])] as const;
+  const tabs = [{ id: 'largest', label: t('results.largest') }, { id: 'all', label: t('results.all') }, { id: 'extensions', label: t('results.extensions') }, ...(changes ? [{ id: 'grown', label: t('results.grownSince', { date: since }) }] : [])] as const;
   const showGrown = activeTab === 'grown' && !!changes;
   const files = showGrown ? changes.grown : largest;
   const searching = query.trim() !== '';
@@ -180,7 +172,7 @@ export default function ResultsScreen({
       <button
         key={f.id}
         className={'large-row' + (linkedHover === f.id ? ' linked-hover' : '')}
-        title={`${f.relativePath}\nReveal in Explorer`}
+        title={`${f.relativePath}\n${t('actions.reveal')}`}
         onClick={() => void action('reveal_in_explorer', node)}
         onMouseEnter={() => setHover(f.id)}
         onMouseLeave={() => setHover(null)}
@@ -213,7 +205,7 @@ export default function ResultsScreen({
       </button>
     );
   };
-  const modifiedTitle = (node: { modified?: number; kind?: string }) => hasModified && node.modified ? (node.kind === 'dir' ? 'Newest file ' : 'Modified ') + formatDate(node.modified) : undefined;
+  const modifiedTitle = (node: { modified?: number; kind?: string }) => hasModified && node.modified ? t(node.kind === 'dir' ? 'results.newest' : 'results.modified', { date: formatDate(node.modified) }) : undefined;
   const sizeTitle = (node: { allocated: number; modified?: number; kind?: string }) => [onDisk(node.allocated), modifiedTitle(node)].filter(Boolean).join('\n') || undefined;
   const sizeCell = (f: { size: number; allocated: number; modified?: number; kind?: string }) => (
     <span className="large-size" title={sizeTitle(f)}><strong>{formatSize(f.size)}</strong><small>{percent(f.size, current.size)}</small></span>
@@ -224,22 +216,22 @@ export default function ResultsScreen({
   return (
     <>
       <section className="results-header">
-        <nav aria-label="Folder navigation">
+        <nav aria-label={t('results.navigation')}>
           <button
-            title="Back (Backspace)"
-            aria-label="Back (Backspace)"
+            title={t('results.backShortcut')}
+            aria-label={t('results.backShortcut')}
             disabled={!history.length}
             onClick={back}
           >
-            ← Back
+            {t('results.back')}
           </button>
           <button
-            title="Up one folder (Alt+↑)"
-            aria-label="Up one folder (Alt+↑)"
+            title={t('results.upShortcut')}
+            aria-label={t('results.upShortcut')}
             disabled={trail.length < 2}
             onClick={up}
           >
-            ↑ Up one folder
+            {t('results.up')}
           </button>
           <div className="breadcrumbs">
             {trail.map((n, i) => (
@@ -262,19 +254,19 @@ export default function ResultsScreen({
               <input
                 ref={searchRef}
                 type="search"
-                aria-label="Search this folder (Ctrl+F)"
+                aria-label={t('search.label')}
                 aria-invalid={searchError ? true : undefined}
                 aria-describedby={searchError ? 'search-error' : undefined}
-                placeholder="Search… *.iso size>1GB type:video"
-                title={searchHelp}
+                placeholder={t('search.placeholder')}
+                title={t('search.help', { categories: categories.map(c => c.id).join(', ') })}
                 spellCheck={false}
                 value={query}
                 onChange={e => setQuery(e.target.value)}
               />
               {searchError && <small id="search-error" className="search-error">{searchError}</small>}
             </div>
-            <button disabled={exporting} onClick={exportScan} title="Save every item in this folder as CSV or JSON">
-              {exporting ? 'Exporting…' : 'Export…'}
+            <button disabled={exporting} onClick={exportScan} title={t('export.hint')}>
+              {exporting ? t('export.busy') : t('export.button')}
             </button>
           </div>
         </nav>
@@ -282,25 +274,25 @@ export default function ResultsScreen({
           <h1 title={currentPath}>{current.name}</h1>
           <span>
             {drive ? (
-              <span title="Total size of files the scan could read. Used also counts unreadable items and file-system overhead.">Scanned <strong>{formatSize(current.size)}</strong></span>
+              <span title={t('results.scannedHint')}>{rich('results.scanned', { size: <strong key="size">{formatSize(current.size)}</strong> })}</span>
             ) : <strong>{formatSize(current.size)}</strong>}
-            {hasAllocated && <span title="Space the files take up on the drive, after compression, sparse files, cloud placeholders and cluster rounding.">· {onDisk(current.allocated)}</span>}
-            {drive && recycled > 0 && <span title="Moved from this snapshot. Space is freed when you empty the Recycle Bin.">· {formatSize(recycled)} in Recycle Bin</span>}
+            {hasAllocated && <span title={t('results.allocatedHint')}>· {onDisk(current.allocated)}</span>}
+            {drive && recycled > 0 && <span title={t('results.recycledHint')}>· {t('results.inRecycle', { size: formatSize(recycled) })}</span>}
             <span>{count(current.files, 'file')}</span>
             <span>{count(current.folders, 'folder')}</span>
             {changes && (
-              <span>{changes.previousSize === null ? 'New' : current.size === changes.previousSize ? 'No change' : formatDelta(current.size - changes.previousSize)} since {since}</span>
+              <span>{t('results.since', { change: changes.previousSize === null ? t('results.new') : current.size === changes.previousSize ? t('results.noChange') : formatDelta(current.size - changes.previousSize), date: since })}</span>
             )}
             {drive ? (
               <span className="drive-capacity">
                 <span>{drive.mount}</span>
-                <span>Used <strong>{formatSize(used)}</strong></span>
-                <span>Free <strong>{formatSize(free)}</strong></span>
-                <span>Total <strong>{formatSize(total)}</strong></span>
-                {notFound !== null && <span title={notFoundText}>Not found <strong>{formatSize(notFound)}</strong></span>}
+                <span>{rich('results.used', { size: <strong key="size">{formatSize(used)}</strong> })}</span>
+                <span>{rich('results.free', { size: <strong key="size">{formatSize(free)}</strong> })}</span>
+                <span>{rich('results.total', { size: <strong key="size">{formatSize(total)}</strong> })}</span>
+                {notFound !== null && <span title={notFoundText}>{rich('results.notFound', { size: <strong key="size">{formatSize(notFound)}</strong> })}</span>}
               </span>
             ) : parentSize !== undefined && (
-              <span>{percent(current.size, parentSize)} of {parentName}</span>
+              <span>{t('results.share', { percent: percent(current.size, parentSize), name: parentName ?? '' })}</span>
             )}
           </span>
         </div>
@@ -310,7 +302,7 @@ export default function ResultsScreen({
           className="skipped"
           role="status"
         >
-          {count(skipped, 'item')} couldn't be read. Run as administrator to include them.
+          {t('results.skipped', { count: skipped, items: count(skipped, 'item') })}
         </div>
       )}
       <div
@@ -319,12 +311,12 @@ export default function ResultsScreen({
       >
         <section className="map-panel">
           <div className="section-heading">
-            <h2>Space map</h2>
-            {hasModified && <div className="color-toggle" role="group" aria-label="Map colors">
-              <button aria-pressed={!ageMode} onClick={() => changeColorBy('type')}>Type</button>
-              <button aria-pressed={ageMode} onClick={() => changeColorBy('age')}>Age</button>
+            <h2>{t('results.map')}</h2>
+            {hasModified && <div className="color-toggle" role="group" aria-label={t('results.colors')}>
+              <button aria-pressed={!ageMode} onClick={() => changeColorBy('type')}>{t('results.type')}</button>
+              <button aria-pressed={ageMode} onClick={() => changeColorBy('age')}>{t('results.age')}</button>
             </div>}
-            {ageMode ? <div className="age-legend" aria-label="File age legend">{ageBuckets.map(bucket => <span key={bucket.label}><i style={{ background: bucket.color }} />{bucket.label}</span>)}</div> : <span>{loading ? 'Loading folder…' : 'Bigger blocks use more space · Colors show file type · Click a folder to zoom in'}</span>}
+            {ageMode ? <div className="age-legend" aria-label={t('results.ageLegend')}>{ageBuckets.map(bucket => <span key={t(`ageBucket.${bucket.id}`)}><i style={{ background: bucket.color }} />{t(`ageBucket.${bucket.id}`)}</span>)}</div> : <span>{loading ? t('results.loadingFolder') : t('results.mapHint')}</span>}
           </div>
           {tree && !loading && tree.id === current.id && tree.size > 0 ? (
             <Treemap
@@ -342,19 +334,19 @@ export default function ResultsScreen({
             <div className="empty-state">
               <h3>
                 {loading
-                  ? 'Opening folder…'
+                  ? t('results.openingFolder')
                   : error
-                    ? 'Folder unavailable'
+                    ? t('results.unavailable')
                     : current.files + current.folders === 0
-                      ? 'This folder is empty'
-                      : 'No file data to map'}
+                      ? t('results.empty')
+                      : t('results.noData')}
               </h3>
               <p>
                 {loading
-                  ? 'Preparing the map and file details.'
+                  ? t('results.preparing')
                   : error
-                    ? 'Rescan the folder to try again.'
-                    : 'Zero-byte files and empty folders appear in Contents.'}
+                    ? t('results.retry')
+                    : t('results.zeroBytes')}
               </p>
             </div>
           )}
@@ -363,11 +355,11 @@ export default function ResultsScreen({
           {searching ? (
             <section className="largest-panel">
               <div className="section-heading">
-                <h2>Search</h2>
+                <h2>{t('search.title')}</h2>
                 {search && (
                   <span>
-                    {search.total.toLocaleString()} {search.total === 1 ? 'match' : 'matches'}
-                    {search.total > search.results.length && `, showing largest ${search.results.length.toLocaleString()}`}
+                    {t('counts.match', { count: search.total })}
+                    {search.total > search.results.length && t('search.showing', { count: search.results.length })}
                   </span>
                 )}
               </div>
@@ -376,7 +368,7 @@ export default function ResultsScreen({
                   <button
                     key={m.id}
                     className="large-row"
-                    title={`${m.relativePath}\nOpen folder`}
+                    title={`${m.relativePath}\n${t('actions.openFolder')}`}
                     onClick={() => openMatch(m)}
                     onMouseEnter={() => setHover(m.id)}
                     onMouseLeave={() => setHover(null)}
@@ -389,15 +381,15 @@ export default function ResultsScreen({
                     {sizeCell(m)}
                   </button>
                 ) : fileRow(m, i, sizeCell(m)))}
-                {search && !search.results.length && <p className="quiet-empty">No matches</p>}
-                {!search && !searchError && <p className="quiet-empty">Searching…</p>}
+                {search && !search.results.length && <p className="quiet-empty">{t('search.none')}</p>}
+                {!search && !searchError && <p className="quiet-empty">{t('search.busy')}</p>}
               </div>
             </section>
           ) : <>
           <section className="contents-panel">
             <div className="section-heading">
-              <h2>Contents</h2>
-              <span>Largest first</span>
+              <h2>{t('results.contents')}</h2>
+              <span>{t('results.largestFirst')}</span>
             </div>
             <div className="contents-scroll">
               {!loading && tree && tree.id === current.id && tree.children?.map((n, i) => {
@@ -453,7 +445,7 @@ export default function ResultsScreen({
                     </span>
                     <strong className="row-size" title={sizeTitle(n)}>
                       {previous !== undefined && (previous === null || Math.abs(delta) >= 1024 ** 2) && (
-                        <small className={`delta ${delta < 0 ? 'shrink' : 'growth'}`}>{previous === null ? 'New' : formatDelta(delta)}</small>
+                        <small className={`delta ${delta < 0 ? 'shrink' : 'growth'}`}>{previous === null ? t('results.new') : formatDelta(delta)}</small>
                       )}
                       {formatSize(n.size)}
                     </strong>
@@ -471,7 +463,7 @@ export default function ResultsScreen({
                 );
               })}
               {!loading && !tree?.children?.length && (
-                <p className="quiet-empty">No items in this folder.</p>
+                <p className="quiet-empty">{t('results.noItems')}</p>
               )}
               {!loading && changes && changes.removed.items > 0 && (
                 <div className="content-row summary-row">
@@ -481,7 +473,7 @@ export default function ResultsScreen({
               )}
               {!loading && notFound !== null && (
                 <div className="content-row not-found-row">
-                  <span>Not found by scan</span>
+                  <span>{t('results.notFoundScan')}</span>
                   <small title={notFoundText}>{notFoundText}</small>
                   <span className="row-data"><span /><strong>{formatSize(notFound)}</strong><span className="row-percent">{percent(notFound, used)}</span></span>
                   <span className="row-meter"><i style={{ width: `${used ? notFound / used * 100 : 0}%` }} /></span>
@@ -493,7 +485,7 @@ export default function ResultsScreen({
             className={`panel-divider${dragging ? ' dragging' : ''}`}
             role="separator"
             aria-orientation="horizontal"
-            aria-label="Resize contents and largest files"
+            aria-label={t('results.resize')}
             aria-valuemin={20}
             aria-valuemax={80}
             aria-valuenow={Math.round(split)}
@@ -531,7 +523,7 @@ export default function ResultsScreen({
           />
           <section className="largest-panel">
             <div className="section-heading">
-              <div className="file-tabs" role="tablist" aria-label="File ranking" onKeyDown={e => {
+              <div className="file-tabs" role="tablist" aria-label={t('results.ranking')} onKeyDown={e => {
                 const index = tabs.findIndex(tab => tab.id === activeTab);
                 const next = e.key === 'ArrowRight' ? (index + 1) % tabs.length : e.key === 'ArrowLeft' ? (index + tabs.length - 1) % tabs.length : e.key === 'Home' ? 0 : e.key === 'End' ? tabs.length - 1 : null;
                 if (next === null) return;
@@ -541,16 +533,16 @@ export default function ResultsScreen({
               }}>
                 {tabs.map(tab => <button key={tab.id} id={'file-tab-' + tab.id} role="tab" aria-controls="file-panel" tabIndex={activeTab === tab.id ? 0 : -1} aria-selected={activeTab === tab.id} onClick={() => setFileTab(tab.id as typeof fileTab)}>{tab.label}</button>)}
               </div>
-              {(activeTab === 'largest' || showGrown) && <span>Top {files.length} in this folder</span>}
+              {(activeTab === 'largest' || showGrown) && <span>{t('results.top', { count: files.length })}</span>}
             </div>
             <div id="file-panel" role="tabpanel" aria-labelledby={'file-tab-' + activeTab} className="file-panel">
               {!loading && tree && tree.id === current.id && activeTab === 'all' ? <FilesPanel tree={tree} hasModified={hasModified} renderFile={(file, i) => fileRow(file, i, sizeCell(file))} />
                 : !loading && tree && tree.id === current.id && activeTab === 'extensions' ? <ExtensionsPanel tree={tree} hasAllocated={hasAllocated} setQuery={setQuery} />
                 : (activeTab === 'largest' || showGrown) && <div className="largest-scroll">
                   {!loading && files.map((f, i) => fileRow(f, i, showGrown && 'previousSize' in f ? (
-                    <span className="large-size" title={sizeTitle(f)}><strong className="delta growth">{formatDelta(f.size - (f.previousSize ?? 0))}</strong><small>{f.previousSize === null ? 'New' : 'was ' + formatSize(f.previousSize)}</small></span>
+                    <span className="large-size" title={sizeTitle(f)}><strong className="delta growth">{formatDelta(f.size - (f.previousSize ?? 0))}</strong><small>{f.previousSize === null ? t('results.new') : t('results.was', { size: formatSize(f.previousSize) })}</small></span>
                   ) : sizeCell(f)))}
-                  {!loading && !files.length && <p className="quiet-empty">{showGrown ? 'No files grew since ' + since + '.' : 'No files found.'}</p>}
+                  {!loading && !files.length && <p className="quiet-empty">{showGrown ? t('results.noGrowth', { date: since }) : t('files.none')}</p>}
                 </div>}
             </div>
           </section>
@@ -560,12 +552,12 @@ export default function ResultsScreen({
       <footer className="type-panel">
         <div
           className="type-bar"
-          aria-label="Space used by file category"
+          aria-label={t('results.categoryUsage')}
         >
           {visibleBreakdown.map(b => (
             <button
               key={b.category}
-              aria-label={`${categories.find(c => c.id === b.category)?.label}: ${formatSize(b.bytes)}`}
+              aria-label={`${t(`category.${b.category}`)}: ${formatSize(b.bytes)}`}
               title={`${formatSize(b.bytes)} · ${count(b.files, 'file')}`}
               style={{
                 width: `${current.size ? b.bytes / current.size * 100 : 0}%`,
@@ -593,7 +585,7 @@ export default function ResultsScreen({
                 title={`${formatSize(b.bytes)} · ${count(b.files, 'file')}`}
               >
                 <i style={{ background: categoryColor(b.category) }} />
-                {c?.label ?? b.category}
+                {t(`category.${c?.id ?? b.category}`)}
                 <span>{formatSize(b.bytes)} · {percent(b.bytes, current.size)}</span>
               </button>
             );

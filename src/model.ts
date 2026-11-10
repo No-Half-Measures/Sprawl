@@ -1,3 +1,4 @@
+import { t, intlLocale } from './i18n';
 import categories from './categories.json';
 export { categories };
 export interface TreeNode { id: number | null; name: string; kind: 'dir' | 'file' | 'other'; size: number; allocated: number; modified?: number; files: number; folders: number; category?: string; children?: TreeNode[] }
@@ -12,7 +13,7 @@ export interface AdminStatus { supported: boolean; elevated: boolean; alwaysElev
 export interface SavedScan { version: number; path: string; scannedAt: number; size: number; files: number; folders: number; recycled?: number; deleted?: number; errors: number; driveFree: number | null; driveTotal: number | null }
 export interface Progress { files: number; folders: number; bytes: number; errors: number; currentPath: string }
 export const emptyProgress: Progress = { files: 0, folders: 0, bytes: 0, errors: 0, currentPath: '' };
-export function count(n: number, noun: string): string { return `${n.toLocaleString()} ${noun}${n === 1 ? '' : 's'}`; }
+export function count(n: number, noun: string): string { return t(`counts.${noun.replace(/ /g, '_')}`, { count: n }); }
 export function refreshTrails(trail: TreeNode[], history: TreeNode[][], ids: number[], nodes: (TreeNode | null)[]): { trail: TreeNode[]; history: TreeNode[][] } {
   const refreshed = new Map(ids.map((id, i) => [id, nodes[i]]));
   const attached = (node: TreeNode) => node.id !== null && refreshed.get(node.id) != null;
@@ -28,22 +29,21 @@ export function isDriveRoot(path: string, mount: string): boolean {
 }
 export function formatAge(ms: number, now = Date.now()): string {
   const minutes = Math.floor(Math.max(0, now - ms) / 60000);
-  if (minutes < 1) return 'just now';
-  if (minutes < 60) return `${minutes} minute${minutes === 1 ? '' : 's'} ago`;
+  if (minutes < 1) return t('age.now');
+  if (minutes < 60) return t('age.minute', { count: minutes });
   const hours = Math.floor(minutes / 60);
-  if (hours < 24) return `${hours} hour${hours === 1 ? '' : 's'} ago`;
+  if (hours < 24) return t('age.hour', { count: hours });
   const days = Math.floor(hours / 24);
-  if (days === 1) return 'yesterday';
-  if (days < 7) return `${days} days ago`;
-  if (days < 30) { const weeks = Math.floor(days / 7); return `${weeks} week${weeks === 1 ? '' : 's'} ago`; }
-  if (days < 365) { const months = Math.floor(days / 30); return `${months} month${months === 1 ? '' : 's'} ago`; }
-  const years = Math.floor(days / 365);
-  return `${years} year${years === 1 ? '' : 's'} ago`;
+  if (days === 1) return t('age.yesterday');
+  if (days < 7) return t('age.day', { count: days });
+  if (days < 30) return t('age.week', { count: Math.floor(days / 7) });
+  if (days < 365) return t('age.month', { count: Math.floor(days / 30) });
+  return t('age.year', { count: Math.floor(days / 365) });
 }
 export function formatScanDate(ms: number): string {
   const date = new Date(ms);
-  const day = date.toLocaleDateString('en-GB', { day: 'numeric', month: 'short', ...(date.getFullYear() !== new Date().getFullYear() ? { year: 'numeric' } : {}) });
-  return `${day}, ${date.toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit' })}`;
+  const day = date.toLocaleDateString(intlLocale, { day: 'numeric', month: 'short', ...(date.getFullYear() !== new Date().getFullYear() ? { year: 'numeric' } : {}) });
+  return `${day}, ${date.toLocaleTimeString(intlLocale, { hour: '2-digit', minute: '2-digit' })}`;
 }
 export function staleness(saved: SavedScan, drive: Drive | undefined, now = Date.now()): { old: boolean; freeDelta: number | null } {
   const delta = drive && saved.driveFree != null ? drive.free - saved.driveFree : null;
@@ -53,11 +53,11 @@ export function staleness(saved: SavedScan, drive: Drive | undefined, now = Date
   };
 }
 export function formatSize(bytes: number): string {
-  if (!Number.isFinite(bytes) || bytes <= 0) return '0 B';
+  if (!Number.isFinite(bytes) || bytes <= 0) return `0 ${t('units.B')}`;
   const units = ['B', 'KB', 'MB', 'GB', 'TB', 'PB'];
   const index = Math.min(Math.floor(Math.log(bytes) / Math.log(1024)), units.length - 1);
   const value = bytes / 1024 ** index;
-  return `${value.toLocaleString('en-GB', { maximumFractionDigits: index === 0 || value >= 100 ? 0 : 1 })} ${units[index]}`;
+  return `${value.toLocaleString(intlLocale, { maximumFractionDigits: index === 0 || value >= 100 ? 0 : 1 })} ${t(`units.${units[index]}`)}`;
 }
 export function formatDelta(bytes: number): string {
   return `${bytes > 0 ? '+' : bytes < 0 ? '−' : ''}${formatSize(Math.abs(bytes))}`;
@@ -73,9 +73,9 @@ export function categoryFor(name: string): string {
 }
 export function categoryColor(id?: string): string { return categories.find(c => c.id === id)?.color ?? '#94a3b5'; }
 export function percent(value: number, total: number): string {
-  if (!Number.isFinite(value) || !Number.isFinite(total) || value <= 0 || total <= 0) return '0%';
+  if (!Number.isFinite(value) || !Number.isFinite(total) || value <= 0 || total <= 0) return new Intl.NumberFormat(intlLocale, { style: 'percent' }).format(0);
   const share = value / total * 100;
-  return share < .1 ? '<0.1%' : `${share.toLocaleString('en-GB', { maximumFractionDigits: 1 })}%`;
+  return (share < .1 ? '<' : '') + new Intl.NumberFormat(intlLocale, { style: 'percent', maximumFractionDigits: 1 }).format(share < .1 ? .001 : value / total);
 }
 export function middlePath(path: string, limit = 100): string { return path.length > limit ? `${path.slice(0, Math.floor(limit * .4))}…${path.slice(-Math.floor(limit * .6))}` : path; }
 
@@ -83,16 +83,16 @@ export interface ExtensionTotal { extension: string; category: string; bytes: nu
 export type FileSort = 'size' | 'name' | 'modified';
 export interface FilePage { total: number; files: LargeFile[] }
 export function formatDate(ms: number): string {
-  return ms ? new Date(ms).toLocaleDateString('en-GB', { day: 'numeric', month: 'short', year: 'numeric', timeZone: 'UTC' }) : '';
+  return ms ? new Date(ms).toLocaleDateString(intlLocale, { day: 'numeric', month: 'short', year: 'numeric', timeZone: 'UTC' }) : '';
 }
 export const ageBuckets = [
-  { days: 30, label: '<1 month', color: '#3fb68b' },
-  { days: 180, label: '<6 months', color: '#8cc152' },
-  { days: 365, label: '<1 year', color: '#e6c34a' },
-  { days: 730, label: '<2 years', color: '#f08c3c' },
-  { days: 1825, label: '<5 years', color: '#e0533d' },
-  { days: Infinity, label: '5+ years', color: '#a33a6b' },
-  { days: 0, label: 'Unknown', color: '#94a3b5' },
+  { days: 30, id: 'month', color: '#3fb68b' },
+  { days: 180, id: 'sixMonths', color: '#8cc152' },
+  { days: 365, id: 'year', color: '#e6c34a' },
+  { days: 730, id: 'twoYears', color: '#f08c3c' },
+  { days: 1825, id: 'fiveYears', color: '#e0533d' },
+  { days: Infinity, id: 'older', color: '#a33a6b' },
+  { days: 0, id: 'unknown', color: '#94a3b5' },
 ];
 export function ageColor(modified: number, now = Date.now()): string {
   if (!modified) return ageBuckets[6].color;

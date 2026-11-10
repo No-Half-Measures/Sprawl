@@ -30,7 +30,7 @@ pub fn context_menu_enabled() -> bool {
 
 #[cfg(not(windows))]
 pub fn set_context_menu(_enabled: bool) -> Result<(), String> {
-    Err("Explorer's right-click menu is only supported on Windows.".into())
+    Err(crate::i18n::t("errors.explorerWindows"))
 }
 
 #[cfg(windows)]
@@ -83,15 +83,15 @@ mod windows {
         let mut process = 0;
         unsafe { GetWindowThreadProcessId(window, &mut process) };
         if process != std::process::id() {
-            return Err("The single-instance window is unavailable.".into());
+            return Err(crate::i18n::t("errors.instanceWindow"));
         }
         if unsafe {
             ChangeWindowMessageFilterEx(window, WM_COPYDATA, MSGFLT_ALLOW, ptr::null_mut())
         } == 0
         {
-            return Err(format!(
-                "Could not receive Explorer scan requests: {}",
-                io::Error::last_os_error()
+            return Err(crate::i18n::with_args(
+                "errors.explorerRequests",
+                &[("error", &io::Error::last_os_error().to_string())],
             ));
         }
         Ok(())
@@ -101,9 +101,12 @@ mod windows {
         if result == ERROR_SUCCESS {
             Ok(())
         } else {
-            Err(format!(
-                "Could not update Explorer's right-click menu: {}",
-                io::Error::from_raw_os_error(result as i32)
+            Err(crate::i18n::with_args(
+                "errors.explorerUpdate",
+                &[(
+                    "error",
+                    &io::Error::from_raw_os_error(result as i32).to_string(),
+                )],
             ))
         }
     }
@@ -170,12 +173,13 @@ mod windows {
     pub fn set_context_menu(enabled: bool) -> Result<(), String> {
         let result = (|| {
             if enabled {
-                let exe = std::env::current_exe()
-                    .map_err(|e| format!("Could not locate the Sprawl executable: {e}"))?;
+                let exe = std::env::current_exe().map_err(|e| {
+                    crate::i18n::with_args("errors.executable", &[("e", &e.to_string())])
+                })?;
                 let exe = exe.to_string_lossy();
                 for (path, background) in KEYS {
                     let key = create(path)?;
-                    write(&key, "", "Scan with Sprawl")?;
+                    write(&key, "", &crate::i18n::t("shell.scan"))?;
                     write(&key, "Icon", &format!("\"{exe}\",0"))?;
                     write(
                         &create(&format!(r"{path}\command"))?,
