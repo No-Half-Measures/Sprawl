@@ -17,6 +17,14 @@ the speed comes from.
 
 Sprawl is built with [Tauri 2](https://tauri.app), Rust and React.
 
+## Languages
+
+The GUI supports English, French, Spanish and German. Choose a language in
+Settings, or use the system default. Translations live in `src/locales/` and
+are shared by the frontend and backend. To add a language, add its JSON catalog
+and register it in `src/i18n.ts` and `src-tauri/src/i18n.rs`. English is the
+source of truth and fallback. The CLI stays in English.
+
 ## Features
 
 - **Fast scans.** As administrator, Sprawl reads whole NTFS drives straight
